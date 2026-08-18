@@ -1,2 +1,38 @@
 #!/usr/bin/env sh
-pnpm exec lint-staged
+# refs/stash lives in the COMMON git dir, so every worktree shares ONE stack.
+# lint-staged's backup stash pushes onto it and drops BY INDEX, so concurrent
+# commits in sibling worktrees drop each other's entries. --no-stash keeps the
+# per-worktree unstaged patch (partial-staging safety) and never touches refs/stash.
+
+git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || git_dir=
+patch=${git_dir:+$git_dir/lint-staged_unstaged.patch}
+# Marker predates the run, so `find -newer` tells a patch written by this run
+# apart from a stale one (--no-stash disables lint-staged's own cleanup step).
+marker=${git_dir:+$git_dir/lint-staged-precommit.marker}
+if [ -n "$marker" ] && ! : > "$marker" 2>/dev/null; then
+	marker=
+fi
+
+rc=0
+pnpm exec lint-staged --no-stash || rc=$?
+
+if [ "$rc" -eq 0 ] || [ -z "$marker" ] || [ ! -s "$patch" ]; then
+	exit "$rc"
+fi
+if [ -z "$(find "$patch" -newer "$marker" 2>/dev/null)" ]; then
+	exit "$rc" # stale patch from an earlier run; not ours to restore
+fi
+
+# --no-stash also disables lint-staged's revert, so when a task fails the hidden
+# hunks of partially staged files survive only in this patch. Put them back.
+if git apply --whitespace=nowarn --recount --unidiff-zero "$patch" 2>/dev/null ||
+	git apply --whitespace=nowarn --recount --unidiff-zero --3way "$patch" 2>/dev/null; then
+	rm -f "$patch"
+	echo "pre-commit: restored unstaged changes to partially staged files."
+else
+	echo "pre-commit: could not auto-restore unstaged changes to partially staged files."
+	echo "  They are saved at: $patch"
+	echo "  Recover with: git apply --recount --unidiff-zero \"$patch\""
+fi
+
+exit "$rc"
