@@ -489,6 +489,24 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(createTimeout).toBeUndefined()
   })
 
+  it('stops sweeping once nothing is resident, and resumes on wake', async () => {
+    // Why: an idle headless host should not keep waking every interval to find
+    // nothing to reclaim. Waking has to bring the sweep back or the woken page
+    // would never be reclaimed again.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    const reclaimer = (h.backend as unknown as { reclaimer: { isScheduled: boolean } }).reclaimer
+    expect(reclaimer.isScheduled).toBe(true)
+
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+    expect(h.backend.listParkedPages()).toHaveLength(1)
+    expect(reclaimer.isScheduled).toBe(false)
+
+    await h.backend.wakeTab('a')
+    expect(reclaimer.isScheduled).toBe(true)
+  })
+
   it('coalesces concurrent wakes into one renderer', async () => {
     const h = createHarness()
     await h.backend.createTab({ url: 'https://example.test/a' })

@@ -185,6 +185,9 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         return false
       }
       page.lastActivityAt = this.now()
+      // Why: the sweep stops once nothing is resident, so a wake has to bring
+      // it back or this page would never be reclaimed again.
+      this.reclaimer.ensureScheduled()
       return true
     })()
     this.waking.set(browserPageId, wake)

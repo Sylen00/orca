@@ -60,7 +60,18 @@ export class OffscreenBrowserPageReclaimer {
       await this.deps.park(browserPageId)
       parked.push(browserPageId)
     }
+    // Why: with nothing resident there is nothing left to reclaim, so the sweep
+    // has no work until a page is created or woken — both of which reschedule
+    // it. Otherwise an idle host keeps waking up forever to find nothing.
+    if (this.deps.pages.resident().length === 0) {
+      this.stop()
+    }
     return parked
+  }
+
+  /** Whether a sweep is currently scheduled. Exposed so the owner can assert it. */
+  get isScheduled(): boolean {
+    return this.sweepTimer !== null
   }
 
   ensureScheduled(): void {
