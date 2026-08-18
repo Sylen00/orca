@@ -60,4 +60,17 @@ describe('mergeParkedBrowserTabs', () => {
       parked: true
     })
   })
+
+  it('reports at most one active tab when several parked pages claim it', () => {
+    // Why: `active` is a single selection. Parking the active page promotes
+    // another live tab, which can later park claiming the flag as well.
+    const merged = mergeParkedBrowserTabs([], [parked('b', true), parked('c', true)])
+    expect(merged.filter((tab) => tab.active).map((tab) => tab.browserPageId)).toEqual(['b'])
+  })
+
+  it('carries a parked page load failure into the listing', () => {
+    const loadError = { code: -105, description: 'NAME_NOT_RESOLVED', validatedUrl: 'https://nope' }
+    const [tab] = mergeParkedBrowserTabs([], [{ ...parked('b'), loadError }])
+    expect(tab.loadError).toEqual(loadError)
+  })
 })

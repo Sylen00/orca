@@ -16,17 +16,23 @@ export function mergeParkedBrowserTabs(
   }
   // Why: parking clears the bridge's active pointer, which then lands on a
   // surviving live tab. A parked page may only claim active when nothing live
-  // does, or a listing can report two active tabs.
-  const liveClaimsActive = live.some((tab) => tab.active)
+  // does, and at most one may — `active` is a single selection, so a listing
+  // that reports two is not something any caller can act on.
+  let activeClaimed = live.some((tab) => tab.active)
   const merged = [...live]
   for (const page of parked) {
+    const active = !activeClaimed && page.active === true
+    activeClaimed = activeClaimed || active
     merged.push({
       browserPageId: page.browserPageId,
       index: merged.length,
       url: page.url,
       title: page.title,
-      active: !liveClaimsActive && page.active === true,
+      active,
       parked: true,
+      // Why: a page that failed to load is still failed while parked; hiding
+      // that would show a broken page as healthy at its address.
+      loadError: page.loadError ?? null,
       worktreeId: page.worktreeId ?? null,
       profileId: page.profileId ?? null
     })

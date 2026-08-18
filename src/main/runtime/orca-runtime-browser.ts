@@ -327,7 +327,7 @@ export class RuntimeBrowserCommands {
     // Read-only callers opt out — listing tabs must never cost a renderer.
     if (options.wakeParkedPage !== false && !this.host.getAvailableAuthoritativeWindow()) {
       const offscreen = this.host.getOffscreenBrowserBackend()
-      const parkedPageId = offscreen?.getMostRecentlyUsedParkedPageId?.(worktreeId)
+      const parkedPageId = offscreen?.getParkedPageIdForImplicitTarget?.(worktreeId)
       if (parkedPageId && (await offscreen?.wakeTab?.(parkedPageId))) {
         return
       }
@@ -1768,7 +1768,7 @@ export class RuntimeBrowserCommands {
       const resolvedTabId =
         tabId ??
         bridge.getActivePageId(worktreeId) ??
-        offscreen.getMostRecentlyUsedParkedPageId?.(worktreeId) ??
+        offscreen.getParkedPageIdForImplicitTarget?.(worktreeId) ??
         null
       if (!resolvedTabId) {
         return { closed: false }

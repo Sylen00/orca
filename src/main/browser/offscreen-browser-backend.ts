@@ -68,6 +68,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       window: null,
       activeWhenParked: false,
       loading: false,
+      loadError: null,
       lastActivityAt: this.now()
     }
     this.pages.add(page)
@@ -151,9 +152,9 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     return this.pages.listParked(worktreeId)
   }
 
-  /** Most-recently-used parked page in a worktree, for implicit targeting. */
-  getMostRecentlyUsedParkedPageId(worktreeId?: string): string | null {
-    return this.pages.mostRecentlyUsedParkedId(worktreeId)
+  /** The parked page a page-less command should target in this worktree. */
+  getParkedPageIdForImplicitTarget(worktreeId?: string): string | null {
+    return this.pages.parkedIdForImplicitTarget(worktreeId)
   }
 
   destroyAll(): void {
@@ -217,23 +218,25 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     if (!page?.window || page.window.isDestroyed()) {
       return
     }
-    // Why: capture the committed address before teardown so a woken page
-    // returns to where the agent left it, not to its original create URL. A
-    // page that never committed still reports the empty or blank address the
-    // window started on; adopting that would send the wake to the wrong page.
-    const wc = page.window.webContents
-    const committed = wc.getURL()
-    const uncommitted = !committed || committed === 'about:blank'
-    if (!uncommitted && !committed.startsWith('chrome-error://')) {
-      page.url = committed
-    }
-    page.title = wc.getTitle() ?? page.title
+    // Why: the record's address is kept current by did-navigate, so parking
+    // never has to guess it from a WebContents that may be sitting on the blank
+    // page a failed load left behind.
+    page.title = page.window.webContents.getTitle() ?? page.title
+    // Why: a reclaimed renderer does not make a page that failed to load
+    // healthy, and the failure becomes unreadable once the guest is
+    // unregistered — so carry it onto the record.
+    page.loadError = this.browserManager.getBrowserPageLoadError(browserPageId)
     page.activeWhenParked =
       this.options
         .getAgentBrowserBridge?.()
         ?.isActiveBrowserPage(browserPageId, page.worktreeId) === true
     await this.releaseRenderer(page, browserPageId)
     page.window = null
+    if (page.activeWhenParked) {
+      // Why: teardown promotes another live tab to active, which then parks
+      // claiming the flag too. Only the newest claim may hold it.
+      this.pages.claimParkedActive(browserPageId, page.worktreeId)
+    }
   }
 
   // Why: teardown order matters — the bridge must destroy the helper session and
@@ -281,6 +284,17 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     // the throw would escape the 'destroyed' listener into the main process.
     // Capture the id while it is still safe to read.
     const webContentsId = win.webContents.id
+    // Why: the record's address must follow the page, not the create call — an
+    // agent that navigates with `goto` or in-page script has to be woken back
+    // to where it actually is. A chrome-error address is the failure, not a
+    // destination, so it never replaces the address that produced it.
+    const trackNavigation = (_event: unknown, url: string): void => {
+      if (page.window === win && url && !url.startsWith('chrome-error://')) {
+        page.url = url
+      }
+    }
+    win.webContents.on('did-navigate', trackNavigation)
+    win.webContents.on('did-navigate-in-page', trackNavigation)
     // Why: if the window is destroyed out from under us (crash, app teardown),
     // drop the page so commands fail cleanly instead of resolving a dead
     // WebContents. Parking destroys it deliberately, so it opts out here.

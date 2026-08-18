@@ -109,7 +109,7 @@ function createFakeHeadlessHost(live: string[], parked: string[]): FakeHeadlessH
         url: `https://example.test/${browserPageId}`,
         title: browserPageId
       })),
-    getMostRecentlyUsedParkedPageId: () => state.parkedPageIds.at(-1) ?? null
+    getParkedPageIdForImplicitTarget: () => state.parkedPageIds.at(-1) ?? null
   } as unknown as BrowserBackend
 
   state.host = {

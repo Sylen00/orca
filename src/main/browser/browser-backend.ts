@@ -6,6 +6,8 @@
 // WebContents uniformly regardless of how the page was created. This interface
 // isolates the only step that actually differs: tab creation and teardown.
 
+import type { BrowserLoadError } from '../../shared/browser-workspace-types'
+
 export type BrowserBackendCreateTab = {
   url: string
   worktreeId?: string
@@ -22,6 +24,9 @@ export type ParkedBrowserPage = {
   title: string
   /** Whether the page was its worktree's active tab when it parked. */
   active?: boolean
+  /** The failure the page last reported. Reclaiming a renderer does not make a
+   *  page that failed to load healthy again. */
+  loadError?: BrowserLoadError | null
 }
 
 export type BrowserBackend = {
@@ -40,7 +45,7 @@ export type BrowserBackend = {
   wakeTab?(browserPageId: string): Promise<boolean>
   /** Pages this backend still owns whose renderer is currently reclaimed. */
   listParkedPages?(worktreeId?: string): ParkedBrowserPage[]
-  /** Most-recently-used parked page, for commands that target a worktree
-   *  rather than a page id. */
-  getMostRecentlyUsedParkedPageId?(worktreeId?: string): string | null
+  /** The parked page a page-less command should target: the one that was
+   *  active when it parked, else the most recently used. */
+  getParkedPageIdForImplicitTarget?(worktreeId?: string): string | null
 }

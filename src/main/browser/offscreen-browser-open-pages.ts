@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron'
+import type { BrowserLoadError } from '../../shared/browser-workspace-types'
 import type { ParkedBrowserPage } from './browser-backend'
 
 // Why (STA-4341): a headless browser page and the renderer behind it have
@@ -20,6 +21,8 @@ export type OffscreenBrowserPage = {
   activeWhenParked: boolean
   /** True while the initial or post-wake navigation is still in flight. */
   loading: boolean
+  /** The failure the page reported when its renderer was reclaimed. */
+  loadError: BrowserLoadError | null
   lastActivityAt: number
 }
 
@@ -77,18 +80,37 @@ export class OffscreenBrowserOpenPages {
       profileId: page.profileId,
       url: page.url,
       title: page.title,
-      active: page.activeWhenParked
+      active: page.activeWhenParked,
+      loadError: page.loadError
     }))
   }
 
-  /** Most-recently-used parked page, for commands that name a worktree. */
-  mostRecentlyUsedParkedId(worktreeId?: string): string | null {
+  /**
+   * The parked page a page-less command should target. Activity order alone is
+   * wrong: an explicit `--page B` command makes B the most recently used while
+   * A is still the active tab, and a page-less command has always meant "the
+   * active tab". So the retained active page wins, and recency only breaks the
+   * tie when none is recorded.
+   */
+  parkedIdForImplicitTarget(worktreeId?: string): string | null {
     let best: OffscreenBrowserPage | null = null
     for (const page of this.parked(worktreeId)) {
+      if (page.activeWhenParked) {
+        return page.browserPageId
+      }
       if (!best || page.lastActivityAt > best.lastActivityAt) {
         best = page
       }
     }
     return best?.browserPageId ?? null
+  }
+
+  /** Only one page per worktree may carry the active flag across a park. */
+  claimParkedActive(browserPageId: string, worktreeId?: string): void {
+    for (const page of this.parked(worktreeId)) {
+      if (page.browserPageId !== browserPageId) {
+        page.activeWhenParked = false
+      }
+    }
   }
 }
