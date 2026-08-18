@@ -181,7 +181,13 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     try {
       return await wake
     } finally {
-      this.waking.delete(browserPageId)
+      // Why: an abandoned wake can outlive a close and a replacement page's own
+      // wake. Clearing the entry blindly would drop the replacement's lock, and
+      // the next command would see a live window with no wake in flight and
+      // drive a renderer that is still being rebuilt.
+      if (this.waking.get(browserPageId) === wake) {
+        this.waking.delete(browserPageId)
+      }
     }
   }
 

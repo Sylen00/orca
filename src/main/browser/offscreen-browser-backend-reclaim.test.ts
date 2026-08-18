@@ -552,6 +552,52 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(await second).toBe(true)
   })
 
+  it('does not let an abandoned wake clear a replacement page wake lock', async () => {
+    // Why: dropping the replacement's lock would let the next command see a
+    // live window with no wake in flight and drive a half-rebuilt renderer.
+    let releaseFirstSwap = (): void => {}
+    let releaseSecondSwap = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    const bridge = h.bridge as unknown as { onProcessSwap: ReturnType<typeof vi.fn> }
+    bridge.onProcessSwap.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseFirstSwap = resolve))
+    )
+    const abandoned = h.backend.wakeTab('a')
+    await Promise.resolve()
+
+    await h.backend.closeTab('a')
+    await h.backend.createTab({ url: 'https://replacement', browserPageId: 'a' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    bridge.onProcessSwap.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseSecondSwap = resolve))
+    )
+    const replacementWake = h.backend.wakeTab('a')
+    await Promise.resolve()
+
+    // The old wake finishing must not release the replacement's lock.
+    releaseFirstSwap()
+    expect(await abandoned).toBe(false)
+
+    let thirdSettled = false
+    const third = h.backend.wakeTab('a').then((value) => {
+      thirdSettled = true
+      return value
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(thirdSettled).toBe(false)
+
+    releaseSecondSwap()
+    expect(await replacementWake).toBe(true)
+    expect(await third).toBe(true)
+  })
+
   it('reports false when waking a page it does not own', async () => {
     const h = createHarness()
     expect(await h.backend.wakeTab('nope')).toBe(false)
