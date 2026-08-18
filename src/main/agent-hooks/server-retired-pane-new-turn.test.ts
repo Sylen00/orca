@@ -36,6 +36,8 @@ const NEW_TURN_EVENT: Record<AgentHookSource, string | null> = {
   copilot: 'sessionStart',
   hermes: 'pre_llm_call',
   devin: 'UserPromptSubmit',
+  // Why null for opencode today: its plugin emits no SessionStart, so it has no reachable
+  // boundary. A pending change adds one; this entry moves with that change, not before it.
   opencode: null,
   'mimo-code': null,
   'command-code': null
@@ -96,10 +98,12 @@ describe("retired pane un-retires on each provider's own new-turn event", () => 
   })
 
   it('leaves the pane retired for a source with no turn boundary', () => {
-    // Why: opencode/mimo-code/command-code have no new-turn event at all. Their real plugins
-    // never emit these literals either, so this closes a hole rather than removing behavior —
-    // no production traffic reached the old literal revival for them.
-    expect(reviveRetiredPane('opencode', 'SessionStart')).toBe(false)
+    // Why mimo-code and command-code rather than opencode: these two have no boundary event in
+    // any planned state. Opencode is deliberately excluded — its plugin emits no SessionStart on
+    // main (verified: zero occurrences in opencode/hook-service.ts), so asserting either outcome
+    // for it would pin a synthetic event, and a pending change gives it a real one.
+    expect(reviveRetiredPane('mimo-code', 'SessionStart')).toBe(false)
+    expect(reviveRetiredPane('command-code', 'SessionStart')).toBe(false)
   })
 
   it('leaves the pane retired for a non-boundary event on a revivable source', () => {
