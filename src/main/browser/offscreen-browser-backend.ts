@@ -48,8 +48,8 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       isWaking: (browserPageId) => this.waking.has(browserPageId),
       hasCertificateChallenge: (browserPageId) =>
         this.browserManager.getBrowserPageCertificateFailure(browserPageId) !== null,
-      activeDownloadProgressAt: (browserPageId) =>
-        this.browserManager.getBrowserPageActiveDownloadProgressAt(browserPageId),
+      hasActiveDownload: (browserPageId) =>
+        this.browserManager.hasActiveBrowserPageDownload(browserPageId),
       isHostPinned: (browserPageId) => this.options.isPagePinned?.(browserPageId) === true,
       park: (browserPageId) => this.parkPage(browserPageId),
       close: (browserPageId) => this.closeTab(browserPageId),

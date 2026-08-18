@@ -3,8 +3,6 @@ import type {
   OffscreenBrowserPage
 } from './offscreen-browser-open-pages'
 import {
-  OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS,
-  selectOffscreenBrowserPagesToClose,
   selectOffscreenBrowserPagesToPark,
   type OffscreenBrowserReclaimPolicy
 } from './offscreen-browser-page-reclaim'
@@ -26,8 +24,8 @@ export type OffscreenBrowserReclaimerDeps = {
   isWaking: (browserPageId: string) => boolean
   /** A certificate challenge the page is blocked on. */
   hasCertificateChallenge: (browserPageId: string) => boolean
-  /** When the page's in-flight downloads last advanced, null when it has none. */
-  activeDownloadProgressAt: (browserPageId: string) => number | null
+  /** A download the page is still writing. */
+  hasActiveDownload: (browserPageId: string) => boolean
   /** A client streaming the page, or a command in flight against it. */
   isHostPinned: (browserPageId: string) => boolean
   park: (browserPageId: string) => Promise<void>
@@ -63,7 +61,6 @@ export class OffscreenBrowserPageReclaimer {
       await this.deps.park(browserPageId)
       parked.push(browserPageId)
     }
-    await this.closeOverRetainedPages()
     return parked
   }
 
@@ -100,30 +97,6 @@ export class OffscreenBrowserPageReclaimer {
     this.sweepInFlight = null
   }
 
-  // Why: parking bounds renderer processes, not the records behind them. An
-  // agent that opens pages forever and closes none would still grow the backend
-  // without limit, so the oldest parked pages are eventually closed outright.
-  private async closeOverRetainedPages(): Promise<void> {
-    const doomed = selectOffscreenBrowserPagesToClose(
-      this.deps.pages.parked().map((page) => this.toCandidate(page)),
-      this.deps.pages.size,
-      this.deps.policy
-    )
-    for (const browserPageId of doomed) {
-      // Why: closing is destructive and awaits teardown, so a page selected
-      // here can be woken before its turn comes. Only close one that is still
-      // parked and still unwanted.
-      const page = this.deps.pages.get(browserPageId)
-      if (!page || page.window || !this.isSafeToReclaim(browserPageId)) {
-        continue
-      }
-      console.warn(
-        `[offscreen-browser] closing parked page ${browserPageId}: more than ${this.deps.policy.retainedPageLimit} pages are open`
-      )
-      await this.deps.close(browserPageId)
-    }
-  }
-
   // Why: a page is off limits while anything depends on its renderer — a client
   // streaming it, a command in flight, its first navigation still committing, a
   // wake still rebuilding it, a certificate decision it is blocked on, or a
@@ -137,19 +110,12 @@ export class OffscreenBrowserPageReclaimer {
       // Why: a challenge id dies with the renderer, so parking would discard
       // both the warning and the ability to approve it.
       this.deps.hasCertificateChallenge(page.browserPageId) ||
-      this.hasAdvancingDownload(page.browserPageId) ||
+      // Why: releasing a renderer unregisters its guest, and that cancels the
+      // page's in-flight downloads. Mirrors the desktop guest budget's veto
+      // (browser-guest-worktree-retention.ts).
+      this.deps.hasActiveDownload(page.browserPageId) ||
       this.deps.isHostPinned(page.browserPageId)
     )
-  }
-
-  // Why: releasing a renderer unregisters its guest, and that cancels the page's
-  // in-flight downloads — the desktop guest budget vetoes eviction for the same
-  // reason (browser-guest-worktree-retention.ts). Bounded by progress, because a
-  // download that stalls forever would otherwise pin its renderer forever, and
-  // one stalled download per page would defeat the resident cap outright.
-  private hasAdvancingDownload(browserPageId: string): boolean {
-    const progressAt = this.deps.activeDownloadProgressAt(browserPageId)
-    return progressAt !== null && this.deps.now() - progressAt < OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS
   }
 
   private toCandidate(page: OffscreenBrowserPage): {

@@ -16,22 +16,12 @@ export const OFFSCREEN_BROWSER_PARK_GRACE_MS = 30_000
 
 /** How often the backend re-evaluates which pages should be resident. */
 export const OFFSCREEN_BROWSER_SWEEP_INTERVAL_MS = 15_000
-/** Parked page records retained before the oldest are closed outright. */
-export const OFFSCREEN_BROWSER_RETAINED_PAGE_LIMIT = 100
-/**
- * How long a download keeps its page resident after its last progress. Parking
- * cancels a page's in-flight downloads, so an advancing one must veto — but a
- * download that stalls forever must not, or one stalled download per page would
- * defeat the resident cap outright.
- */
-export const OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS = 60_000
 
 export type OffscreenBrowserReclaimPolicy = {
   residentLimit: number
   idleParkMs: number
   parkGraceMs: number
   sweepIntervalMs: number
-  retainedPageLimit: number
 }
 
 export type OffscreenBrowserReclaimCandidate = {
@@ -67,13 +57,6 @@ export function readOffscreenBrowserReclaimPolicy(): OffscreenBrowserReclaimPoli
     sweepIntervalMs: Math.max(
       100,
       readPositiveIntEnv('ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS', OFFSCREEN_BROWSER_SWEEP_INTERVAL_MS)
-    ),
-    retainedPageLimit: Math.max(
-      1,
-      readPositiveIntEnv(
-        'ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES',
-        OFFSCREEN_BROWSER_RETAINED_PAGE_LIMIT
-      )
     )
   }
 }
@@ -122,31 +105,4 @@ export function selectOffscreenBrowserPagesToPark(
   }
 
   return parkable.map((page) => page.browserPageId).filter((id) => parked.has(id))
-}
-
-/**
- * Pick parked pages to close outright. Parking bounds renderer processes but
- * not the records behind them, so an agent that opens pages forever and closes
- * none would still grow the backend without limit. Only parked pages are
- * eligible and only the least recently used go, so this can never take a page
- * an agent is still working with.
- */
-export function selectOffscreenBrowserPagesToClose(
-  parkedPages: readonly OffscreenBrowserReclaimCandidate[],
-  totalPageCount: number,
-  policy: OffscreenBrowserReclaimPolicy
-): string[] {
-  const excess = totalPageCount - policy.retainedPageLimit
-  if (excess <= 0) {
-    return []
-  }
-  return parkedPages
-    .filter((page) => !page.pinned)
-    .sort(
-      (left, right) =>
-        left.lastActivityAt - right.lastActivityAt ||
-        left.browserPageId.localeCompare(right.browserPageId)
-    )
-    .slice(0, excess)
-    .map((page) => page.browserPageId)
 }

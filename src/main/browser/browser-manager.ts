@@ -201,8 +201,6 @@ type ActiveDownload = {
   savePath: string
   reservationKey: string | null
   receivedBytes: number
-  /** Last time Electron reported progress; the liveness signal a reclaimer needs. */
-  lastProgressAt: number
   transientState: BrowserDownloadProgressEvent['state']
   terminalEvent: BrowserDownloadFinishedEvent | null
   startedSent: boolean
@@ -1474,23 +1472,18 @@ export class BrowserManager {
       : (this.loadErrorsByGuestId.get(webContentsId) ?? null)
   }
 
-  /**
-   * When this page's in-flight downloads last made progress, or null when it has
-   * none. Why (STA-4341): unregisterGuest cancels a tab's in-flight downloads, so
-   * a reclaimer must not take a page that is still writing one — the desktop guest
-   * budget vetoes eviction for the same reason. A timestamp rather than a boolean
-   * because a download that stalls forever must not pin a renderer forever; the
-   * caller owns that bound.
-   */
-  getBrowserPageActiveDownloadProgressAt(browserPageId: string): number | null {
-    let latest: number | null = null
+  // Why (STA-4341): unregisterGuest cancels a tab's in-flight downloads, so a
+  // reclaimer must not take a page that is still writing one. Mirrors the
+  // desktop guest budget's veto (browser-page-download-activity.ts) exactly,
+  // including its unbounded nature: a download is treated as work in progress
+  // for as long as it stays active.
+  hasActiveBrowserPageDownload(browserPageId: string): boolean {
     for (const download of this.downloadsById.values()) {
       if (download.browserTabId === browserPageId && !download.terminalEvent) {
-        latest =
-          latest === null ? download.lastProgressAt : Math.max(latest, download.lastProgressAt)
+        return true
       }
     }
-    return latest
+    return false
   }
 
   getBrowserPageCertificateFailure(browserPageId: string): BrowserCertificateFailure | null {
@@ -1638,7 +1631,6 @@ export class BrowserManager {
       savePath: fallbackSavePath,
       reservationKey: destination?.reservationKey ?? null,
       receivedBytes: 0,
-      lastProgressAt: Date.now(),
       transientState: null,
       terminalEvent: null,
       startedSent: false,
@@ -1680,7 +1672,6 @@ export class BrowserManager {
 
     const updatedHandler = (_event: Electron.Event, state: 'progressing' | 'interrupted'): void => {
       download.receivedBytes = this.getDownloadReceivedBytes(download.item)
-      download.lastProgressAt = Date.now()
       download.transientState = state
       this.sendDownloadProgress(download.browserTabId, {
         browserPageId: download.browserTabId ?? undefined,

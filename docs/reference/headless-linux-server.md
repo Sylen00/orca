@@ -294,18 +294,18 @@ initial load is still running, or while it is waiting on a certificate
 decision. A navigation that has still not finished by the load timeout is
 deliberately reclaimable — otherwise one stalled page per create could hold a
 renderer forever, which is the failure this exists to prevent; waking it simply
-retries the address.
+retries the address. Parking never closes a page: the page stays open until
+something closes it, exactly as on the desktop.
 
 Two evictors decide what stays resident, mirroring terminal pane parking. The
 cap is the primary one:
 
-| Variable                                   | Default  | Meaning                                                                |
-| ------------------------------------------ | -------- | ---------------------------------------------------------------------- |
-| `ORCA_HEADLESS_BROWSER_RESIDENT_LIMIT`     | `4`      | Renderers kept resident. Least-recently-used pages park past this.     |
-| `ORCA_HEADLESS_BROWSER_PARK_IDLE_MS`       | `300000` | A page parks after this long untouched, even under the cap.            |
-| `ORCA_HEADLESS_BROWSER_PARK_GRACE_MS`      | `30000`  | A page is never parked this soon after its last command.               |
-| `ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS`      | `15000`  | How often the server re-evaluates residency.                           |
-| `ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES` | `100`    | Open pages retained before the oldest parked ones are closed outright. |
+| Variable                               | Default  | Meaning                                                            |
+| -------------------------------------- | -------- | ------------------------------------------------------------------ |
+| `ORCA_HEADLESS_BROWSER_RESIDENT_LIMIT` | `4`      | Renderers kept resident. Least-recently-used pages park past this. |
+| `ORCA_HEADLESS_BROWSER_PARK_IDLE_MS`   | `300000` | A page parks after this long untouched, even under the cap.        |
+| `ORCA_HEADLESS_BROWSER_PARK_GRACE_MS`  | `30000`  | A page is never parked this soon after its last command.           |
+| `ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS`  | `15000`  | How often the server re-evaluates residency.                       |
 
 Raise the limit on a host with memory to spare, or set both the limit and the
 idle window very high to keep every page resident — at the cost this

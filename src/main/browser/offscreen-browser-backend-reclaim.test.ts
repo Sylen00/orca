@@ -96,7 +96,6 @@ type Harness = {
   pagesChanged: (string | undefined)[]
   certificateFailurePageIds: Set<string>
   downloadingPageIds: Set<string>
-  downloadProgressAt: number
 }
 
 function createHarness(
@@ -112,7 +111,6 @@ function createHarness(
     activePageId: overrides.activePageId,
     certificateFailurePageIds: new Set<string>(overrides.certificateFailurePageIds ?? []),
     downloadingPageIds: new Set<string>(overrides.downloadingPageIds ?? []),
-    downloadProgressAt: 1_000_000,
     pagesChanged: [] as (string | undefined)[]
   }
   const order: string[] = []
@@ -145,8 +143,8 @@ function createHarness(
     getBrowserPageLoadError: () => overrides.loadError ?? null,
     getBrowserPageCertificateFailure: (browserPageId: string) =>
       state.certificateFailurePageIds.has(browserPageId) ? { challengeId: 'c' } : null,
-    getBrowserPageActiveDownloadProgressAt: (browserPageId: string) =>
-      state.downloadingPageIds.has(browserPageId) ? state.downloadProgressAt : null
+    hasActiveBrowserPageDownload: (browserPageId: string) =>
+      state.downloadingPageIds.has(browserPageId)
   } as unknown as BrowserManager
 
   const bridge = {
@@ -181,10 +179,7 @@ function createHarness(
       return state.pagesChanged
     },
     certificateFailurePageIds: state.certificateFailurePageIds,
-    downloadingPageIds: state.downloadingPageIds,
-    set downloadProgressAt(value: number) {
-      state.downloadProgressAt = value
-    }
+    downloadingPageIds: state.downloadingPageIds
   }
 }
 
@@ -195,7 +190,6 @@ beforeEach(() => {
   process.env.ORCA_HEADLESS_BROWSER_PARK_IDLE_MS = '60000'
   process.env.ORCA_HEADLESS_BROWSER_PARK_GRACE_MS = '5000'
   process.env.ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS = '100000'
-  process.env.ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES = '100'
 })
 
 describe('OffscreenBrowserBackend reclamation', () => {
@@ -330,43 +324,6 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a'])
   })
 
-  it('does not close a parked page that was woken while an earlier close was in flight', async () => {
-    let releaseFirstTeardown = (): void => {}
-    process.env.ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES = '2'
-    // Why: pinning the two newer pages keeps the park loop empty, so the sweep
-    // that blocks is the retention close — the path under test.
-    const h = createHarness({ pinned: new Set(['c', 'd']) })
-    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
-
-    for (const id of ['a', 'b']) {
-      await h.backend.createTab({ url: `https://${id}`, browserPageId: id })
-      h.clock.value += 1_000
-    }
-    h.clock.value += 120_000
-    await h.backend.reclaimIdlePages()
-    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a', 'b'])
-
-    // Two more push the retention budget over, dooming the two oldest parked.
-    for (const id of ['c', 'd']) {
-      await h.backend.createTab({ url: `https://${id}`, browserPageId: id })
-      h.clock.value += 1_000
-    }
-    h.clock.value += 120_000
-    bridge.onTabClosed.mockImplementationOnce(
-      async () => new Promise<void>((resolve) => (releaseFirstTeardown = resolve))
-    )
-
-    const sweep = h.backend.reclaimIdlePages()
-    await Promise.resolve()
-    await h.backend.wakeTab('b')
-    releaseFirstTeardown()
-    await sweep
-
-    // a was closed; b survived the stale close list and is resident again.
-    expect(await h.backend.wakeTab('a')).toBe(false)
-    expect(await h.backend.wakeTab('b')).toBe(true)
-  })
-
   it('does not park a page whose wake is still rebuilding it', async () => {
     // Why: a wake is resident but not yet loading while it awaits the process
     // swap, so without an explicit pin the sweep can destroy it mid-rebuild.
@@ -428,30 +385,17 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.pagesChanged).toEqual(['wt-1'])
   })
 
-  it('does not park a page whose download is still advancing', async () => {
+  it('does not park a page that is still writing a download', async () => {
     // Why: releasing a renderer unregisters its guest, and browser-manager
     // cancels that page's in-flight downloads on unregister. The desktop guest
     // budget vetoes eviction for the same reason.
     const h = createHarness({ downloadingPageIds: ['a'] })
     await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
     h.clock.value += 120_000
-    h.downloadProgressAt = h.clock.value
 
     expect(await h.backend.reclaimIdlePages()).toEqual([])
 
     h.downloadingPageIds.delete('a')
-    expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
-  })
-
-  it('parks a page whose download has stalled so the cap cannot be defeated', async () => {
-    // Why: a download that never progresses again would otherwise pin its
-    // renderer forever, and one stalled download per page would defeat the
-    // resident cap outright — the same shape as the load-pin bug before it.
-    const h = createHarness({ downloadingPageIds: ['a'] })
-    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
-    h.downloadProgressAt = h.clock.value
-    h.clock.value += 120_000
-
     expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
   })
 
@@ -822,21 +766,6 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.order).toEqual([`session-destroy:${webContentsId}`, 'unregister:a'])
     expect(h.backend.listParkedPages()).toEqual([])
     expect(await h.backend.wakeTab('a')).toBe(false)
-  })
-
-  it('closes the oldest parked pages once too many records are retained', async () => {
-    // Why: parking bounds renderer processes, not the page records behind them.
-    process.env.ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES = '2'
-    const h = createHarness()
-    for (const id of ['a', 'b', 'c', 'd']) {
-      await h.backend.createTab({ url: `https://example.test/${id}`, browserPageId: id })
-      h.clock.value += 1_000
-    }
-    h.clock.value += 120_000
-    await h.backend.reclaimIdlePages()
-
-    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['c', 'd'])
-    expect(h.windows.every((win) => win.isDestroyed())).toBe(true)
   })
 
   it('scopes parked listings and implicit targeting to a worktree', async () => {
