@@ -6606,6 +6606,14 @@ export class OrcaRuntimeService {
     return this.offscreenBrowserBackend
   }
 
+  // Why (STA-4341): closing a parked page has no WebContents teardown to
+  // piggyback on, so the session snapshot only learns about it through here.
+  notifyHeadlessBrowserPagesChanged(worktreeId: string | undefined): void {
+    if (worktreeId) {
+      this.notifyMobileSessionTabsChanged(worktreeId)
+    }
+  }
+
   // Why (STA-4341): the headless reclaimer asks the runtime before parking a
   // page, so a streamed or mid-command page keeps its renderer.
   isBrowserPagePinned(browserPageId: string): boolean {

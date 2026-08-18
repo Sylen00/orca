@@ -25,8 +25,9 @@ type FakeWindow = BrowserWindow & {
   __destroyed: boolean
   __url: string
   __destroyedListeners: (() => void)[]
-  __navigationListeners: ((e: unknown, url: string) => void)[]
-  navigateTo: (url: string) => void
+  __navigationListeners: ((e: unknown, url: string, isMainFrame?: boolean) => void)[]
+  navigateTo: (url: string, isMainFrame?: boolean) => void
+  __loading: boolean
 }
 
 let nextWebContentsId = 100
@@ -38,12 +39,15 @@ function makeWindow(): FakeWindow {
     __destroyed: false,
     __url: 'about:blank',
     __destroyedListeners: [] as (() => void)[],
-    __navigationListeners: [] as ((e: unknown, url: string) => void)[],
+    __navigationListeners: [] as ((e: unknown, url: string, isMainFrame?: boolean) => void)[],
+    __loading: false,
     isDestroyed: () => win.__destroyed,
-    navigateTo: (url: string) => {
-      win.__url = url
+    navigateTo: (url: string, isMainFrame = true) => {
+      if (isMainFrame) {
+        win.__url = url
+      }
       for (const listener of win.__navigationListeners) {
-        listener(null, url)
+        listener(null, url, isMainFrame)
       }
     },
     destroy: () => {
@@ -56,14 +60,22 @@ function makeWindow(): FakeWindow {
       id,
       isDestroyed: () => win.__destroyed,
       getURL: () => win.__url,
+      isLoading: () => win.__loading,
       getTitle: () => `title-${id}`,
       once: (event: string, listener: () => void) => {
         if (event === 'destroyed') {
           win.__destroyedListeners.push(listener)
         }
       },
-      on: (event: string, listener: (e: unknown, url: string) => void) => {
-        if (event === 'did-navigate' || event === 'did-navigate-in-page') {
+      on: (event: string, listener: (e: unknown, url: string, isMainFrame?: boolean) => void) => {
+        if (event === 'did-navigate') {
+          win.__navigationListeners.push((e, url, isMainFrame) => {
+            if (isMainFrame !== false) {
+              listener(e, url)
+            }
+          })
+        }
+        if (event === 'did-navigate-in-page') {
           win.__navigationListeners.push(listener)
         }
       }
@@ -81,6 +93,8 @@ type Harness = {
   windows: FakeWindow[]
   clock: { value: number }
   activePageId: string | undefined
+  pagesChanged: (string | undefined)[]
+  certificateFailurePageIds: Set<string>
 }
 
 function createHarness(
@@ -88,9 +102,14 @@ function createHarness(
     pinned?: Set<string>
     activePageId?: string
     loadError?: { code: number; description: string; validatedUrl: string } | null
+    certificateFailurePageIds?: string[]
   } = {}
 ): Harness {
-  const state = { activePageId: overrides.activePageId }
+  const state = {
+    activePageId: overrides.activePageId,
+    certificateFailurePageIds: new Set<string>(overrides.certificateFailurePageIds ?? []),
+    pagesChanged: [] as (string | undefined)[]
+  }
   const order: string[] = []
   const registered = new Map<string, number>()
   const windows: FakeWindow[] = []
@@ -118,7 +137,9 @@ function createHarness(
       registered.delete(browserPageId)
     },
     getGuestWebContentsId: (browserPageId: string) => registered.get(browserPageId) ?? null,
-    getBrowserPageLoadError: () => overrides.loadError ?? null
+    getBrowserPageLoadError: () => overrides.loadError ?? null,
+    getBrowserPageCertificateFailure: (browserPageId: string) =>
+      state.certificateFailurePageIds.has(browserPageId) ? { challengeId: 'c' } : null
   } as unknown as BrowserManager
 
   const bridge = {
@@ -134,6 +155,7 @@ function createHarness(
   const backend = new OffscreenBrowserBackend(manager, {
     getAgentBrowserBridge: () => bridge,
     isPagePinned: (id) => overrides.pinned?.has(id) === true,
+    onPagesChanged: (worktreeId) => state.pagesChanged.push(worktreeId),
     now: () => clock.value
   })
 
@@ -147,7 +169,11 @@ function createHarness(
     clock,
     set activePageId(value: string | undefined) {
       state.activePageId = value
-    }
+    },
+    get pagesChanged(): (string | undefined)[] {
+      return state.pagesChanged
+    },
+    certificateFailurePageIds: state.certificateFailurePageIds
   }
 }
 
@@ -351,6 +377,81 @@ describe('OffscreenBrowserBackend reclamation', () => {
 
     releaseSwap()
     expect(await wake).toBe(true)
+  })
+
+  it('does not let a slow close unregister a page that reused its id', async () => {
+    // Why: closing drops the record before teardown finishes, so a caller
+    // reusing the id could register a renderer the old close then unregisters,
+    // leaving the new page unreachable by every command.
+    let releaseTeardown = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
+    bridge.onTabClosed.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseTeardown = resolve))
+    )
+
+    const close = h.backend.closeTab('a')
+    await Promise.resolve()
+    const recreate = h.backend.createTab({ url: 'https://a2', browserPageId: 'a' })
+    releaseTeardown()
+    await close
+    await recreate
+
+    expect(h.registered.get('a')).toBe(h.windows[1].webContents.id)
+    expect(h.windows[0].isDestroyed()).toBe(true)
+    expect(h.windows[1].isDestroyed()).toBe(false)
+  })
+
+  it('tells the session snapshot when a parked page is closed', async () => {
+    // Why: a parked close has no WebContents teardown to piggyback on, so
+    // nothing else would tell paired clients the tab is gone.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a', worktreeId: 'wt-1' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+    h.pagesChanged.length = 0
+
+    await h.backend.closeTab('a')
+
+    expect(h.pagesChanged).toEqual(['wt-1'])
+  })
+
+  it('does not park a page waiting on a certificate decision', async () => {
+    // Why: the challenge id dies with the renderer, so parking would discard
+    // both the warning and the ability to approve it.
+    const h = createHarness({ certificateFailurePageIds: ['a'] })
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.clock.value += 120_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual([])
+
+    h.certificateFailurePageIds.delete('a')
+    expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
+  })
+
+  it('does not park a renderer whose navigation is still running after the load timeout', async () => {
+    // Why: the load helper resolves on its own timeout, so `loading` stops
+    // covering a navigation that is merely slow rather than finished.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.windows[0].__loading = true
+    h.clock.value += 120_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual([])
+
+    h.windows[0].__loading = false
+    expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
+  })
+
+  it('ignores a subframe in-page navigation when recording the address', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://host.test/', browserPageId: 'a' })
+    h.windows[0].navigateTo('https://frame.test/#x', false)
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.backend.listParkedPages()[0]?.url).toBe('https://host.test/')
   })
 
   it('coalesces concurrent wakes into one renderer', async () => {

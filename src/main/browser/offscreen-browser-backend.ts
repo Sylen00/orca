@@ -27,6 +27,8 @@ export type OffscreenBrowserBackendOptions = {
   getAgentBrowserBridge?: () => AgentBrowserBridge | null
   /** Pages a client is streaming or that have a command in flight. */
   isPagePinned?: (browserPageId: string) => boolean
+  /** Called when the set of open pages changes, so paired clients republish. */
+  onPagesChanged?: (worktreeId: string | undefined) => void
   now?: () => number
 }
 
@@ -50,6 +52,10 @@ export class OffscreenBrowserBackend implements BrowserBackend {
 
   async createTab(params: BrowserBackendCreateTab): Promise<{ browserPageId: string }> {
     const browserPageId = params.browserPageId ?? randomUUID()
+    // Why: closing drops the record before its teardown finishes, so a caller
+    // reusing the id can register a new renderer that the old close then
+    // unregisters. Let the release finish before claiming the id again.
+    await this.releasing.get(browserPageId)
     if (this.pages.has(browserPageId)) {
       throw new Error(`Browser page ${browserPageId} already exists`)
     }
@@ -103,6 +109,12 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     await this.releaseRenderer(page, browserPageId)
     if (this.pages.size === 0) {
       this.stopSweep()
+    }
+    // Why: closing a parked page has no WebContents teardown to piggyback on,
+    // so nothing else tells paired clients the tab is gone — they would keep
+    // showing a ghost until an operation against it failed.
+    if (page) {
+      this.options.onPagesChanged?.(page.worktreeId)
     }
   }
 
@@ -250,9 +262,28 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   private isPagePinned(page: OffscreenBrowserPage): boolean {
     return (
       page.loading ||
+      this.isNavigating(page) ||
       this.waking.has(page.browserPageId) ||
+      // Why: a page blocked on a certificate decision is work waiting on an
+      // answer. Its challenge id dies with the renderer, so parking it would
+      // discard both the warning and the ability to approve it.
+      this.browserManager.getBrowserPageCertificateFailure(page.browserPageId) !== null ||
       this.options.isPagePinned?.(page.browserPageId) === true
     )
+  }
+
+  // Why: the load helper resolves on its own timeout, so `loading` stops
+  // covering a navigation that is slow rather than finished. Ask the renderer.
+  private isNavigating(page: OffscreenBrowserPage): boolean {
+    const win = page.window
+    if (!win || win.isDestroyed()) {
+      return false
+    }
+    try {
+      return win.webContents.isLoading()
+    } catch {
+      return false
+    }
   }
 
   private isSafeToReclaim(browserPageId: string): boolean {
@@ -352,13 +383,21 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     // agent that navigates with `goto` or in-page script has to be woken back
     // to where it actually is. A chrome-error address is the failure, not a
     // destination, so it never replaces the address that produced it.
-    const trackNavigation = (_event: unknown, url: string): void => {
+    const recordAddress = (url: string): void => {
       if (page.window === win && url && !url.startsWith('chrome-error://')) {
         page.url = url
       }
     }
-    win.webContents.on('did-navigate', trackNavigation)
-    win.webContents.on('did-navigate-in-page', trackNavigation)
+    // did-navigate is main-frame only; did-frame-navigate covers subframes.
+    win.webContents.on('did-navigate', (_event, url) => recordAddress(url))
+    // Why: an iframe changing its own hash also fires did-navigate-in-page. A
+    // subframe navigation is not a navigation of the tab, and adopting its
+    // address would wake the page onto the iframe's document.
+    win.webContents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+      if (isMainFrame) {
+        recordAddress(url)
+      }
+    })
     // Why: if the window is destroyed out from under us (crash, app teardown),
     // drop the page so commands fail cleanly instead of resolving a dead
     // WebContents. Parking destroys it deliberately, so it opts out here.

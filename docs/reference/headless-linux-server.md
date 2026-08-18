@@ -289,8 +289,8 @@ targets it transparently rebuilds the renderer and reloads the address. What a
 park does _not_ preserve is in-page JavaScript state — cookies and local
 storage live in the profile partition and survive, but an unsubmitted form or
 an SPA's in-memory state does not. A page is never parked while a paired
-client is streaming it, while a command against it is in flight, or while its
-navigation has not committed.
+client is streaming it, while a command against it is in flight, while it is
+still navigating, or while it is waiting on a certificate decision.
 
 Two evictors decide what stays resident, mirroring terminal pane parking. The
 cap is the primary one:

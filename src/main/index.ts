@@ -3168,7 +3168,8 @@ void app.whenReady().then(async () => {
       runtime.setOffscreenBrowserBackend(
         new OffscreenBrowserBackend(browserManager, {
           getAgentBrowserBridge: () => runtime?.getAgentBrowserBridge() ?? null,
-          isPagePinned: (browserPageId) => runtime?.isBrowserPagePinned(browserPageId) === true
+          isPagePinned: (browserPageId) => runtime?.isBrowserPagePinned(browserPageId) === true,
+          onPagesChanged: (worktreeId) => runtime?.notifyHeadlessBrowserPagesChanged(worktreeId)
         })
       )
     }

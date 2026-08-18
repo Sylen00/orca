@@ -163,6 +163,19 @@ describe('headless parked-page targeting', () => {
     ])
   })
 
+  it('reports back the index the caller passed, not the renumbered one', async () => {
+    // Why: waking the target makes it live, which renumbers the bridge listing.
+    // Reporting that position would describe neither the request nor the
+    // listing the caller read.
+    const { RuntimeBrowserCommands } = await import('./orca-runtime-browser')
+    const fake = createFakeHeadlessHost(['live-a'], ['parked-b', 'parked-c'])
+    const commands = new RuntimeBrowserCommands(fake.host)
+
+    const result = await commands.browserTabSwitch({ index: 2, worktree: 'id:wt-1' })
+
+    expect(result).toMatchObject({ switched: 2, browserPageId: 'parked-c' })
+  })
+
   it('counts an indexed switch of a resident page as using it', async () => {
     const { RuntimeBrowserCommands } = await import('./orca-runtime-browser')
     const fake = createFakeHeadlessHost(['live-a', 'live-b'], ['parked-c'])

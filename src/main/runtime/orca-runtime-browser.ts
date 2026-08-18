@@ -757,11 +757,17 @@ export class RuntimeBrowserCommands {
     // or `tab switch --index 0` selects a different tab than the one it showed.
     const indexed = await this.resolveIndexedTargetBeforeWake(params)
     const target = indexed ?? (await this.resolveBrowserCommandTarget(params))
-    const result = await bridge.tabSwitch(
+    const switched = await bridge.tabSwitch(
       indexed ? undefined : params.index,
       target.worktreeId,
       target.browserPageId
     )
+    // Why (STA-4341): waking the target makes it live, which renumbers the
+    // bridge's own listing. Report the index the caller passed — the one the
+    // listing they read actually names — rather than a position that describes
+    // neither their request nor what they were looking at.
+    const result =
+      indexed && params.index !== undefined ? { ...switched, switched: params.index } : switched
     if (params.focus) {
       // Why: scope focus to the tab's owning worktree; the renderer never yanks the user across worktrees on this signal (see focusBrowserTabInWorktree).
       const worktreeId =
