@@ -60,6 +60,7 @@ import { BrowserError } from '../browser/cdp-bridge'
 import { startBrowserScreencast } from '../browser/browser-screencast-stream'
 import type { BrowserScreencastSession } from '../browser/browser-screencast-stream-types'
 import { browserSessionRegistry } from '../browser/browser-session-registry'
+import { mergeParkedBrowserTabs } from '../browser/headless-browser-tab-listing'
 import {
   detectInstalledBrowsers,
   importCookiesFromBrowser,
@@ -651,25 +652,20 @@ export class RuntimeBrowserCommands {
   private listBrowserTabsIncludingParked(
     worktreeId: string | undefined
   ): BrowserTabListResult['tabs'] {
-    const live = this.requireAgentBrowserBridge()
-      .tabList(worktreeId)
-      .tabs.map((tab) => this.enrichBrowserTabInfo(tab))
-    const parked = (
+    const merged = mergeParkedBrowserTabs(
+      this.requireAgentBrowserBridge().tabList(worktreeId).tabs,
       this.host.getOffscreenBrowserBackend()?.listParkedPages?.(worktreeId) ?? []
-    ).map((page, offset): BrowserTabListResult['tabs'][number] => ({
-      browserPageId: page.browserPageId,
-      index: live.length + offset,
-      url: page.url,
-      title: page.title,
-      active: false,
-      parked: true,
-      worktreeId: page.worktreeId ?? null,
-      profileId: page.profileId ?? null,
-      profileLabel:
-        browserSessionRegistry.getProfile(page.profileId ?? 'default')?.label ??
-        browserSessionRegistry.getDefaultProfile().label
-    }))
-    return [...live, ...parked]
+    )
+    return merged.map((tab) =>
+      tab.parked
+        ? {
+            ...tab,
+            profileLabel:
+              browserSessionRegistry.getProfile(tab.profileId ?? 'default')?.label ??
+              browserSessionRegistry.getDefaultProfile().label
+          }
+        : this.enrichBrowserTabInfo(tab)
+    )
   }
 
   /**

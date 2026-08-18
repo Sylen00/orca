@@ -714,6 +714,21 @@ export class AgentBrowserBridge {
     return this.processingQueues.has(`orca-tab-${browserPageId}`)
   }
 
+  // Why (STA-4341): parking has to record whether the page was the active tab
+  // so the session snapshot can keep saying so. Read the active pointers
+  // directly — resolveActiveTab() would reassign them as a side effect.
+  isActiveBrowserPage(browserPageId: string, worktreeId?: string): boolean {
+    const webContentsId = this.browserManager.getGuestWebContentsId(browserPageId)
+    if (webContentsId == null) {
+      return false
+    }
+    const owningWorktreeId = worktreeId ?? this.browserManager.getWorktreeIdForTab(browserPageId)
+    const active =
+      (owningWorktreeId && this.activeWebContentsPerWorktree.get(owningWorktreeId)) ??
+      this.activeWebContentsId
+    return active === webContentsId
+  }
+
   getRegisteredTabs(worktreeId?: string): Map<string, number> {
     const all = this.browserManager.getWebContentsIdByTabId()
     if (!worktreeId) {

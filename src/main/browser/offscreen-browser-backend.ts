@@ -27,6 +27,8 @@ type OffscreenPage = {
   title: string
   /** null while parked — the page exists, its renderer does not. */
   window: BrowserWindow | null
+  /** Whether the page was its worktree's active tab when it parked. */
+  activeWhenParked: boolean
   lastActivityAt: number
 }
 
@@ -46,6 +48,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   private readonly waking = new Map<string, Promise<boolean>>()
   private readonly policy: OffscreenBrowserReclaimPolicy
   private sweepTimer: NodeJS.Timeout | null = null
+  private sweepInFlight: Promise<unknown> | null = null
 
   constructor(
     private readonly browserManager: BrowserManager,
@@ -73,6 +76,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       url,
       title: '',
       window: null,
+      activeWhenParked: false,
       lastActivityAt: this.now()
     }
     this.pages.set(browserPageId, page)
@@ -128,6 +132,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       if (page.window && !page.window.isDestroyed()) {
         return true
       }
+      page.activeWhenParked = false
       const previousWebContentsId = this.browserManager.getGuestWebContentsId(browserPageId)
       this.materialize(page)
       const bridge = this.options.getAgentBrowserBridge?.() ?? null
@@ -166,7 +171,8 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         worktreeId: page.worktreeId,
         profileId: page.profileId,
         url: page.url,
-        title: page.title
+        title: page.title,
+        active: page.activeWhenParked
       })
     }
     return parked
@@ -235,6 +241,10 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       page.url = committed
     }
     page.title = wc.getTitle() ?? page.title
+    page.activeWhenParked =
+      this.options
+        .getAgentBrowserBridge?.()
+        ?.isActiveBrowserPage(browserPageId, page.worktreeId) === true
     await this.releaseRenderer(page, browserPageId)
     page.window = null
   }
@@ -316,8 +326,20 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       return
     }
     this.sweepTimer = setInterval(() => {
-      void this.reclaimIdlePages().catch(() => {
+      // Why: a park waits on the helper session's own bounded teardown, which
+      // can outlast the interval. Without this guard slow teardowns would stack
+      // sweeps on top of each other for as long as they lag.
+      if (this.sweepInFlight) {
+        return
+      }
+      const sweep = this.reclaimIdlePages().catch(() => {
         // A failed park is retried on the next sweep.
+      })
+      this.sweepInFlight = sweep
+      void sweep.finally(() => {
+        if (this.sweepInFlight === sweep) {
+          this.sweepInFlight = null
+        }
       })
     }, this.policy.sweepIntervalMs)
     // Why: reclamation must never be the reason the process stays alive.
@@ -329,6 +351,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       clearInterval(this.sweepTimer)
       this.sweepTimer = null
     }
+    this.sweepInFlight = null
   }
 
   private now(): number {

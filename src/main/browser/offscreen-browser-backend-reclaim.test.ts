@@ -68,7 +68,7 @@ type Harness = {
   clock: { value: number }
 }
 
-function createHarness(overrides: { pinned?: Set<string> } = {}): Harness {
+function createHarness(overrides: { pinned?: Set<string>; activePageId?: string } = {}): Harness {
   const order: string[] = []
   const registered = new Map<string, number>()
   const windows: FakeWindow[] = []
@@ -104,7 +104,8 @@ function createHarness(overrides: { pinned?: Set<string> } = {}): Harness {
     }),
     onProcessSwap: vi.fn(async (browserPageId: string, webContentsId: number) => {
       order.push(`process-swap:${browserPageId}:${webContentsId}`)
-    })
+    }),
+    isActiveBrowserPage: (browserPageId: string) => overrides.activePageId === browserPageId
   } as unknown as AgentBrowserBridge
 
   const backend = new OffscreenBrowserBackend(manager, {
@@ -142,7 +143,8 @@ describe('OffscreenBrowserBackend reclamation', () => {
         worktreeId: undefined,
         profileId: 'default',
         url: 'about:blank',
-        title: `title-${h.windows[0].webContents.id}`
+        title: `title-${h.windows[0].webContents.id}`,
+        active: false
       }
     ])
   })
@@ -243,6 +245,26 @@ describe('OffscreenBrowserBackend reclamation', () => {
 
     expect(await h.backend.reclaimIdlePages()).toEqual(['a', 'b'])
     expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a', 'b'])
+  })
+
+  it('remembers whether a page was active when it parked, and forgets on wake', async () => {
+    // Why: the paired client's tab bar reads the session snapshot; a park must
+    // not silently deselect the tab the user had open.
+    const h = createHarness({ activePageId: 'a' })
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    await h.backend.createTab({ url: 'https://b', browserPageId: 'b' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(
+      h.backend.listParkedPages().map((page) => [page.browserPageId, page.active === true])
+    ).toEqual([
+      ['a', true],
+      ['b', false]
+    ])
+
+    await h.backend.wakeTab('a')
+    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['b'])
   })
 
   it('reports the most recently used parked page for implicit targeting', async () => {

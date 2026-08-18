@@ -20,6 +20,8 @@ export type ParkedBrowserPage = {
   profileId?: string
   url: string
   title: string
+  /** Whether the page was its worktree's active tab when it parked. */
+  active?: boolean
 }
 
 export type BrowserBackend = {

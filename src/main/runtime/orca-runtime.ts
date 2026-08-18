@@ -730,6 +730,7 @@ import { RendererPublicationThrottle } from '../window/renderer-publication-thro
 import type { AgentBrowserBridge } from '../browser/agent-browser-bridge'
 import type { BrowserBackend } from '../browser/browser-backend'
 import { BrowserError } from '../browser/cdp-bridge'
+import { mergeParkedBrowserTabs } from '../browser/headless-browser-tab-listing'
 import {
   getPRForBranch,
   getPRForBranchOutcome,
@@ -8224,7 +8225,7 @@ export class OrcaRuntimeService {
     if (!this.offscreenBrowserBackend || !this.agentBrowserBridge?.tabList) {
       return []
     }
-    return this.agentBrowserBridge.tabList(worktreeId).tabs.map((tab) => {
+    return this.listOpenHeadlessBrowserTabs(worktreeId).map((tab) => {
       const persistedProps = this.getPersistedUnifiedSessionTabProps(worktreeId, tab.browserPageId)
       return {
         type: 'browser' as const,
@@ -9983,7 +9984,7 @@ export class OrcaRuntimeService {
     if (!snapshot) {
       return ids
     }
-    const liveBrowserTabsByPageId = this.getLiveBrowserTabsByPageId(snapshot.worktree)
+    const liveBrowserTabsByPageId = this.getOpenBrowserTabsByPageId(snapshot.worktree)
     for (const tab of snapshot.tabs) {
       if (tab.type === 'browser') {
         const liveTab = tab.browserPageId
@@ -26534,7 +26535,7 @@ export class OrcaRuntimeService {
     if (!this.offscreenBrowserBackend || !this.agentBrowserBridge?.tabList) {
       return
     }
-    for (const tab of this.agentBrowserBridge.tabList(worktreeId).tabs) {
+    for (const tab of this.listOpenHeadlessBrowserTabs(worktreeId)) {
       void this.offscreenBrowserBackend.closeTab(tab.browserPageId).catch(() => {})
     }
   }
@@ -33160,7 +33161,7 @@ export class OrcaRuntimeService {
         this.isHeadlessBuiltMobileSessionPublicationBase(snapshot.publicationEpoch) ||
         (snapshot.publicationEpoch.includes(':headless-merge:') &&
           typeof tab.browserPageId === 'string' &&
-          this.getLiveBrowserTabsByPageId(snapshot.worktree).has(tab.browserPageId))
+          this.getOpenBrowserTabsByPageId(snapshot.worktree).has(tab.browserPageId))
       )
     }
     if (tab.type !== 'terminal') {
@@ -33342,12 +33343,24 @@ export class OrcaRuntimeService {
     return worktreeId
   }
 
-  private getLiveBrowserTabsByPageId(worktreeId: string): Map<string, BrowserTabInfo> {
+  // Why (STA-4341): a headless page whose renderer was reclaimed is parked, not
+  // closed. Session publication gates browser tabs on this map, so leaving
+  // parked pages out would drop the tab from a paired client's tab bar and let
+  // the next snapshot prune it — while the runtime still owns the page.
+  private listOpenHeadlessBrowserTabs(worktreeId: string): BrowserTabInfo[] {
     if (!this.agentBrowserBridge?.tabList) {
-      return new Map()
+      return []
     }
-    const liveTabs = this.agentBrowserBridge.tabList(worktreeId).tabs
-    return new Map(liveTabs.map((tab) => [tab.browserPageId, tab]))
+    return mergeParkedBrowserTabs(
+      this.agentBrowserBridge.tabList(worktreeId).tabs,
+      this.offscreenBrowserBackend?.listParkedPages?.(worktreeId) ?? []
+    )
+  }
+
+  private getOpenBrowserTabsByPageId(worktreeId: string): Map<string, BrowserTabInfo> {
+    return new Map(
+      this.listOpenHeadlessBrowserTabs(worktreeId).map((tab) => [tab.browserPageId, tab])
+    )
   }
 
   private collectReturnedSessionTabIds(
@@ -33418,7 +33431,7 @@ export class OrcaRuntimeService {
     snapshot: RuntimeMobileSessionTabsSnapshot
   ): RuntimeMobileSessionTabsResult {
     const tabs: RuntimeMobileSessionClientTab[] = []
-    const liveBrowserTabsByPageId = this.getLiveBrowserTabsByPageId(snapshot.worktree)
+    const liveBrowserTabsByPageId = this.getOpenBrowserTabsByPageId(snapshot.worktree)
     // Production reads hook rows by pane; the snapshot fallback remains for tests
     // and embedders that have not adopted the narrow getter.
     let hookRowsByPaneKey: Map<string, AgentStatusIpcPayload[]> | null = null
