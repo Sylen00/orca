@@ -184,6 +184,18 @@ describe('headless parked-page targeting', () => {
     expect(fake.closedPageIds).toEqual(['parked-c'])
   })
 
+  it('counts `tab current` as using the page it names', async () => {
+    // Why: without this an agent could poll `tab current` continuously and
+    // still have that very page reclaimed under it.
+    const { RuntimeBrowserCommands } = await import('./orca-runtime-browser')
+    const fake = createFakeHeadlessHost(['live-a'], [])
+    const commands = new RuntimeBrowserCommands(fake.host)
+
+    await commands.browserTabCurrent({ worktree: 'id:wt-1' })
+
+    expect(fake.wakeCalls).toEqual(['live-a'])
+  })
+
   it('closes a parked page by index without rebuilding its renderer', async () => {
     // Why: waking a page only to destroy it is pure churn, and a wake that
     // fails would turn a reclaimable page into an unclosable one.

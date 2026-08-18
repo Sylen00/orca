@@ -267,6 +267,92 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
   })
 
+  it('does not park a page that was used while an earlier park was in flight', async () => {
+    // Why: parking awaits helper-session teardown, so a page later in the
+    // selection can be woken and driven before its turn comes. The selection is
+    // a proposal, not a licence.
+    let releaseFirstTeardown = (): void => {}
+    const h = createHarness()
+    for (const id of ['a', 'b', 'c', 'd']) {
+      await h.backend.createTab({ url: `https://${id}`, browserPageId: id })
+      h.clock.value += 1_000
+    }
+    h.clock.value += 10_000
+    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
+    bridge.onTabClosed.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseFirstTeardown = resolve))
+    )
+
+    const sweep = h.backend.reclaimIdlePages()
+    await Promise.resolve()
+    // b is next in line to park; a command lands on it while a is tearing down.
+    await h.backend.wakeTab('b')
+    releaseFirstTeardown()
+
+    expect(await sweep).toEqual(['a'])
+    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a'])
+  })
+
+  it('does not close a parked page that was woken while an earlier close was in flight', async () => {
+    let releaseFirstTeardown = (): void => {}
+    process.env.ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES = '2'
+    // Why: pinning the two newer pages keeps the park loop empty, so the sweep
+    // that blocks is the retention close — the path under test.
+    const h = createHarness({ pinned: new Set(['c', 'd']) })
+    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
+
+    for (const id of ['a', 'b']) {
+      await h.backend.createTab({ url: `https://${id}`, browserPageId: id })
+      h.clock.value += 1_000
+    }
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a', 'b'])
+
+    // Two more push the retention budget over, dooming the two oldest parked.
+    for (const id of ['c', 'd']) {
+      await h.backend.createTab({ url: `https://${id}`, browserPageId: id })
+      h.clock.value += 1_000
+    }
+    h.clock.value += 120_000
+    bridge.onTabClosed.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseFirstTeardown = resolve))
+    )
+
+    const sweep = h.backend.reclaimIdlePages()
+    await Promise.resolve()
+    await h.backend.wakeTab('b')
+    releaseFirstTeardown()
+    await sweep
+
+    // a was closed; b survived the stale close list and is resident again.
+    expect(await h.backend.wakeTab('a')).toBe(false)
+    expect(await h.backend.wakeTab('b')).toBe(true)
+  })
+
+  it('does not park a page whose wake is still rebuilding it', async () => {
+    // Why: a wake is resident but not yet loading while it awaits the process
+    // swap, so without an explicit pin the sweep can destroy it mid-rebuild.
+    let releaseSwap = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    const bridge = h.bridge as unknown as { onProcessSwap: ReturnType<typeof vi.fn> }
+    bridge.onProcessSwap.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseSwap = resolve))
+    )
+    const wake = h.backend.wakeTab('a')
+    await Promise.resolve()
+    h.clock.value += 120_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual([])
+
+    releaseSwap()
+    expect(await wake).toBe(true)
+  })
+
   it('coalesces concurrent wakes into one renderer', async () => {
     const h = createHarness()
     await h.backend.createTab({ url: 'https://example.test/a' })

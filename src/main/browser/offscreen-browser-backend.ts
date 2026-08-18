@@ -185,46 +185,82 @@ export class OffscreenBrowserBackend implements BrowserBackend {
 
   /** Park every page the policy no longer wants resident. Exposed for tests. */
   async reclaimIdlePages(): Promise<string[]> {
-    const now = this.now()
     const resident = this.pages.resident().filter((page) => !this.releasing.has(page.browserPageId))
     const doomed = selectOffscreenBrowserPagesToPark(
-      resident.map((page) => ({
-        browserPageId: page.browserPageId,
-        lastActivityAt: page.lastActivityAt,
-        // Why: a page still committing its first navigation has nothing worth
-        // keeping yet and would be woken straight back to the same address.
-        pinned: page.loading || this.options.isPagePinned?.(page.browserPageId) === true
-      })),
-      now,
+      resident.map((page) => this.toReclaimCandidate(page)),
+      this.now(),
       this.policy
     )
+    const parked: string[] = []
     for (const browserPageId of doomed) {
+      // Why: parking awaits the helper session's teardown, so a page later in
+      // this list can be woken and driven while an earlier one is still being
+      // torn down. The selection is a proposal, not a licence — re-check each
+      // page against the live state before destroying its renderer.
+      if (!this.isSafeToReclaim(browserPageId)) {
+        continue
+      }
       await this.parkPage(browserPageId)
+      parked.push(browserPageId)
     }
     await this.closeOverRetainedPages()
-    return doomed
+    return parked
   }
 
   // Why: parking bounds renderer processes, not the records behind them. An
   // agent that opens pages forever and closes none would still grow the backend
   // without limit, so the oldest parked pages are eventually closed outright.
   private async closeOverRetainedPages(): Promise<void> {
-    const parked = this.pages.parked()
     const doomed = selectOffscreenBrowserPagesToClose(
-      parked.map((page) => ({
-        browserPageId: page.browserPageId,
-        lastActivityAt: page.lastActivityAt,
-        pinned: this.options.isPagePinned?.(page.browserPageId) === true
-      })),
+      this.pages.parked().map((page) => this.toReclaimCandidate(page)),
       this.pages.size,
       this.policy
     )
     for (const browserPageId of doomed) {
+      // Why: closing is destructive and awaits teardown, so a page selected
+      // here can be woken before its turn comes. Only close one that is still
+      // parked and still unwanted.
+      const page = this.pages.get(browserPageId)
+      if (!page || page.window || !this.isSafeToReclaim(browserPageId)) {
+        continue
+      }
       console.warn(
         `[offscreen-browser] closing parked page ${browserPageId}: more than ${this.policy.retainedPageLimit} pages are open`
       )
       await this.closeTab(browserPageId)
     }
+  }
+
+  private toReclaimCandidate(page: OffscreenBrowserPage): {
+    browserPageId: string
+    lastActivityAt: number
+    pinned: boolean
+  } {
+    return {
+      browserPageId: page.browserPageId,
+      lastActivityAt: page.lastActivityAt,
+      pinned: this.isPagePinned(page)
+    }
+  }
+
+  // Why: a page is off limits while anything is depending on its renderer —
+  // a client streaming it, a command in flight, its first navigation still
+  // committing, or a wake still rebuilding it. The wake case matters because a
+  // wake is resident but not yet loading while it awaits the process swap.
+  private isPagePinned(page: OffscreenBrowserPage): boolean {
+    return (
+      page.loading ||
+      this.waking.has(page.browserPageId) ||
+      this.options.isPagePinned?.(page.browserPageId) === true
+    )
+  }
+
+  private isSafeToReclaim(browserPageId: string): boolean {
+    const page = this.pages.get(browserPageId)
+    if (!page || this.releasing.has(browserPageId)) {
+      return false
+    }
+    return !this.isPagePinned(page) && this.now() - page.lastActivityAt >= this.policy.parkGraceMs
   }
 
   private async parkPage(browserPageId: string): Promise<void> {

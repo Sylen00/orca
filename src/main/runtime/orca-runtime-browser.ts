@@ -737,6 +737,10 @@ export class RuntimeBrowserCommands {
     if (!browserPageId) {
       throw new BrowserError('browser_no_tab', 'No browser tab open in this worktree')
     }
+    // Why (STA-4341): this names a page like any other page-targeting command,
+    // so it has to count as using it. Without this an agent could poll `tab
+    // current` continuously and still have that very page reclaimed under it.
+    await this.markHeadlessBrowserPageUsed(browserPageId)
     return { tab: this.describeBrowserTab(browserPageId, worktreeId) }
   }
 
