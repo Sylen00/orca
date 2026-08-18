@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  selectOffscreenBrowserPagesToClose,
   selectOffscreenBrowserPagesToPark,
   type OffscreenBrowserReclaimCandidate,
   type OffscreenBrowserReclaimPolicy
@@ -11,7 +12,8 @@ const POLICY: OffscreenBrowserReclaimPolicy = {
   residentLimit: 2,
   idleParkMs: 60_000,
   parkGraceMs: 5_000,
-  sweepIntervalMs: 1_000
+  sweepIntervalMs: 1_000,
+  retainedPageLimit: 100
 }
 
 function page(
@@ -94,5 +96,26 @@ describe('selectOffscreenBrowserPagesToPark', () => {
         idleParkMs: Number.MAX_SAFE_INTEGER
       })
     ).toEqual([])
+  })
+})
+
+describe('selectOffscreenBrowserPagesToClose', () => {
+  it('retains every parked page under the limit', () => {
+    expect(selectOffscreenBrowserPagesToClose([page('a', 1), page('b', 2)], 2, POLICY)).toEqual([])
+  })
+
+  it('closes the least recently used parked pages down to the limit', () => {
+    // Why: parking bounds renderer processes, not the records behind them.
+    const parked = [page('new', 1_000), page('old', 90_000), page('older', 99_000)]
+    expect(
+      selectOffscreenBrowserPagesToClose(parked, 5, { ...POLICY, retainedPageLimit: 3 })
+    ).toEqual(['older', 'old'])
+  })
+
+  it('never closes a pinned page', () => {
+    const parked = [page('pinned', 99_000, true), page('idle', 90_000)]
+    expect(
+      selectOffscreenBrowserPagesToClose(parked, 4, { ...POLICY, retainedPageLimit: 2 })
+    ).toEqual(['idle'])
   })
 })

@@ -669,9 +669,9 @@ export class RuntimeBrowserCommands {
   }
 
   /**
-   * Resolve an `--index` against the listing the caller saw, waking the target
-   * when it names a parked page. Returns null on desktop, where there are no
-   * parked pages and the bridge's own index handling still applies.
+   * Resolve an `--index` against the listing the caller saw, waking the target.
+   * Returns null on desktop, where there are no parked pages and the bridge's
+   * own index handling still applies.
    */
   private async resolveIndexedParkedAwarePageId(
     worktreeId: string | undefined,
@@ -689,10 +689,26 @@ export class RuntimeBrowserCommands {
         `Tab index ${index} out of range (0-${tabs.length - 1})`
       )
     }
-    if (chosen.parked) {
-      await offscreen.wakeTab?.(chosen.browserPageId)
-    }
+    // Why: waking unconditionally also restarts the reclaim clock, so selecting
+    // a resident page counts as using it rather than leaving it up for eviction.
+    await offscreen.wakeTab?.(chosen.browserPageId)
     return chosen.browserPageId
+  }
+
+  // Why: index resolution must not run behind resolveBrowserCommandTarget's
+  // implicit wake, which reorders the listing. Headless only — desktop keeps the
+  // bridge's own index handling untouched.
+  private async resolveIndexedTargetBeforeWake(
+    params: { index?: number } & BrowserCommandTargetParams
+  ): Promise<ResolvedBrowserCommandTarget | null> {
+    if (params.index === undefined || params.page || this.host.getAvailableAuthoritativeWindow()) {
+      return null
+    }
+    const worktreeId = await this.resolveBrowserWorktreeId(params.worktree, {
+      wakeParkedPage: false
+    })
+    const browserPageId = await this.resolveIndexedParkedAwarePageId(worktreeId, params.index)
+    return browserPageId ? { worktreeId, browserPageId } : null
   }
 
   async browserProceedCertificate(
@@ -725,16 +741,17 @@ export class RuntimeBrowserCommands {
       focus?: boolean
     } & BrowserCommandTargetParams
   ): Promise<BrowserTabSwitchResult> {
-    const target = await this.resolveBrowserCommandTarget(params)
     const bridge = this.requireAgentBrowserBridge()
-    const indexedPageId =
-      params.index !== undefined && !target.browserPageId
-        ? await this.resolveIndexedParkedAwarePageId(target.worktreeId, params.index)
-        : null
+    // Why (STA-4341): an implicit target wakes the most recently used parked
+    // page, which makes it live and moves it to the front of the listing. Resolve
+    // the index against the listing the caller actually read — before any wake —
+    // or `tab switch --index 0` selects a different tab than the one it showed.
+    const indexed = await this.resolveIndexedTargetBeforeWake(params)
+    const target = indexed ?? (await this.resolveBrowserCommandTarget(params))
     const result = await bridge.tabSwitch(
-      indexedPageId ? undefined : params.index,
+      indexed ? undefined : params.index,
       target.worktreeId,
-      target.browserPageId ?? indexedPageId ?? undefined
+      target.browserPageId
     )
     if (params.focus) {
       // Why: scope focus to the tab's owning worktree; the renderer never yanks the user across worktrees on this signal (see focusBrowserTabInWorktree).

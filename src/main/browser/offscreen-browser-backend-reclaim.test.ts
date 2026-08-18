@@ -124,6 +124,7 @@ beforeEach(() => {
   process.env.ORCA_HEADLESS_BROWSER_PARK_IDLE_MS = '60000'
   process.env.ORCA_HEADLESS_BROWSER_PARK_GRACE_MS = '5000'
   process.env.ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS = '100000'
+  process.env.ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES = '100'
 })
 
 describe('OffscreenBrowserBackend reclamation', () => {
@@ -142,7 +143,7 @@ describe('OffscreenBrowserBackend reclamation', () => {
         browserPageId: pageId,
         worktreeId: undefined,
         profileId: 'default',
-        url: 'about:blank',
+        url: 'https://example.test/a',
         title: `title-${h.windows[0].webContents.id}`,
         active: false
       }
@@ -200,6 +201,36 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.order).toEqual([`register:${pageId}:${wokenId}`, `process-swap:${pageId}:${wokenId}`])
     expect(loadOffscreenBrowserUrl).toHaveBeenCalledWith(h.windows[1], 'https://example.test/moved')
     expect(h.backend.listParkedPages()).toEqual([])
+  })
+
+  it('keeps the requested address when a page parks before committing one', async () => {
+    // Why: an uncommitted window still reports about:blank, and adopting that
+    // would send the wake to a blank page instead of the agent's URL.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/slow', browserPageId: 'a' })
+    h.windows[0].__url = 'about:blank'
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.backend.listParkedPages()[0]?.url).toBe('https://example.test/slow')
+  })
+
+  it('never parks a page whose navigation is still in flight', async () => {
+    let finishLoad = (): void => {}
+    loadOffscreenBrowserUrl.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (finishLoad = resolve))
+    )
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/slow', browserPageId: 'a' })
+
+    h.clock.value += 120_000
+    expect(await h.backend.reclaimIdlePages()).toEqual([])
+
+    finishLoad()
+    await Promise.resolve()
+    await Promise.resolve()
+    h.clock.value += 120_000
+    expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
   })
 
   it('coalesces concurrent wakes into one renderer', async () => {
@@ -324,14 +355,35 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a'])
   })
 
-  it('drops a page whose renderer dies on its own', async () => {
+  it('drops a page whose renderer dies on its own and reclaims its helper session', async () => {
+    // Why: without this the crash path leaks one helper session, CDP proxy and
+    // listening port per lost renderer — a crash loop is unbounded.
     const h = createHarness()
     await h.backend.createTab({ url: 'https://example.test/a', browserPageId: 'a' })
+    const webContentsId = h.windows[0].webContents.id
+    h.order.length = 0
 
     h.windows[0].destroy()
+    await Promise.resolve()
 
+    expect(h.order).toEqual([`session-destroy:${webContentsId}`, 'unregister:a'])
     expect(h.backend.listParkedPages()).toEqual([])
     expect(await h.backend.wakeTab('a')).toBe(false)
+  })
+
+  it('closes the oldest parked pages once too many records are retained', async () => {
+    // Why: parking bounds renderer processes, not the page records behind them.
+    process.env.ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES = '2'
+    const h = createHarness()
+    for (const id of ['a', 'b', 'c', 'd']) {
+      await h.backend.createTab({ url: `https://example.test/${id}`, browserPageId: id })
+      h.clock.value += 1_000
+    }
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['c', 'd'])
+    expect(h.windows.every((win) => win.isDestroyed())).toBe(true)
   })
 
   it('scopes parked listings and implicit targeting to a worktree', async () => {

@@ -289,17 +289,19 @@ targets it transparently rebuilds the renderer and reloads the address. What a
 park does _not_ preserve is in-page JavaScript state — cookies and local
 storage live in the profile partition and survive, but an unsubmitted form or
 an SPA's in-memory state does not. A page is never parked while a paired
-client is streaming it or while a command is in flight.
+client is streaming it, while a command against it is in flight, or while its
+navigation has not committed.
 
 Two evictors decide what stays resident, mirroring terminal pane parking. The
 cap is the primary one:
 
-| Variable                               | Default  | Meaning                                                            |
-| -------------------------------------- | -------- | ------------------------------------------------------------------ |
-| `ORCA_HEADLESS_BROWSER_RESIDENT_LIMIT` | `4`      | Renderers kept resident. Least-recently-used pages park past this. |
-| `ORCA_HEADLESS_BROWSER_PARK_IDLE_MS`   | `300000` | A page parks after this long untouched, even under the cap.        |
-| `ORCA_HEADLESS_BROWSER_PARK_GRACE_MS`  | `30000`  | A page is never parked this soon after its last command.           |
-| `ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS`  | `15000`  | How often the server re-evaluates residency.                       |
+| Variable                                   | Default  | Meaning                                                                |
+| ------------------------------------------ | -------- | ---------------------------------------------------------------------- |
+| `ORCA_HEADLESS_BROWSER_RESIDENT_LIMIT`     | `4`      | Renderers kept resident. Least-recently-used pages park past this.     |
+| `ORCA_HEADLESS_BROWSER_PARK_IDLE_MS`       | `300000` | A page parks after this long untouched, even under the cap.            |
+| `ORCA_HEADLESS_BROWSER_PARK_GRACE_MS`      | `30000`  | A page is never parked this soon after its last command.               |
+| `ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS`      | `15000`  | How often the server re-evaluates residency.                           |
+| `ORCA_HEADLESS_BROWSER_MAX_RETAINED_PAGES` | `100`    | Open pages retained before the oldest parked ones are closed outright. |
 
 Raise the limit on a host with memory to spare, or set both the limit and the
 idle window very high to keep every page resident — at the cost this

@@ -7,6 +7,7 @@ import type { BrowserManager } from './browser-manager'
 import { browserSessionRegistry } from './browser-session-registry'
 import {
   readOffscreenBrowserReclaimPolicy,
+  selectOffscreenBrowserPagesToClose,
   selectOffscreenBrowserPagesToPark,
   type OffscreenBrowserReclaimPolicy
 } from './offscreen-browser-page-reclaim'
@@ -29,6 +30,8 @@ type OffscreenPage = {
   window: BrowserWindow | null
   /** Whether the page was its worktree's active tab when it parked. */
   activeWhenParked: boolean
+  /** True while the initial or post-wake navigation is still in flight. */
+  loading: boolean
   lastActivityAt: number
 }
 
@@ -77,6 +80,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       title: '',
       window: null,
       activeWhenParked: false,
+      loading: false,
       lastActivityAt: this.now()
     }
     this.pages.set(browserPageId, page)
@@ -217,7 +221,9 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       resident.map((page) => ({
         browserPageId: page.browserPageId,
         lastActivityAt: page.lastActivityAt,
-        pinned: this.options.isPagePinned?.(page.browserPageId) === true
+        // Why: a page still committing its first navigation has nothing worth
+        // keeping yet and would be woken straight back to the same address.
+        pinned: page.loading || this.options.isPagePinned?.(page.browserPageId) === true
       })),
       now,
       this.policy
@@ -225,7 +231,32 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     for (const browserPageId of doomed) {
       await this.parkPage(browserPageId)
     }
+    await this.closeOverRetainedPages()
     return doomed
+  }
+
+  // Why: parking bounds renderer processes, not the records behind them. An
+  // agent that opens pages forever and closes none would still grow the backend
+  // without limit, so the oldest parked pages are eventually closed outright.
+  private async closeOverRetainedPages(): Promise<void> {
+    const parked = [...this.pages.values()].filter(
+      (page) => !page.window || page.window.isDestroyed()
+    )
+    const doomed = selectOffscreenBrowserPagesToClose(
+      parked.map((page) => ({
+        browserPageId: page.browserPageId,
+        lastActivityAt: page.lastActivityAt,
+        pinned: this.options.isPagePinned?.(page.browserPageId) === true
+      })),
+      this.pages.size,
+      this.policy
+    )
+    for (const browserPageId of doomed) {
+      console.warn(
+        `[offscreen-browser] closing parked page ${browserPageId}: more than ${this.policy.retainedPageLimit} pages are open`
+      )
+      await this.closeTab(browserPageId)
+    }
   }
 
   private async parkPage(browserPageId: string): Promise<void> {
@@ -234,10 +265,13 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       return
     }
     // Why: capture the committed address before teardown so a woken page
-    // returns to where the agent left it, not to its original create URL.
+    // returns to where the agent left it, not to its original create URL. A
+    // page that never committed still reports the empty or blank address the
+    // window started on; adopting that would send the wake to the wrong page.
     const wc = page.window.webContents
     const committed = wc.getURL()
-    if (committed && !committed.startsWith('chrome-error://')) {
+    const uncommitted = !committed || committed === 'about:blank'
+    if (!uncommitted && !committed.startsWith('chrome-error://')) {
       page.url = committed
     }
     page.title = wc.getTitle() ?? page.title
@@ -287,6 +321,10 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   private materialize(page: OffscreenPage): void {
     const win = createOffscreenBrowserWindow(page.partition)
     page.window = win
+    // Why: reading win.webContents once the contents are destroyed throws, and
+    // the throw would escape the 'destroyed' listener into the main process.
+    // Capture the id while it is still safe to read.
+    const webContentsId = win.webContents.id
     // Why: if the window is destroyed out from under us (crash, app teardown),
     // drop the page so commands fail cleanly instead of resolving a dead
     // WebContents. Parking destroys it deliberately, so it opts out here.
@@ -295,7 +333,17 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         return
       }
       this.pages.delete(page.browserPageId)
+      // Why: an unprompted renderer loss must reclaim the helper session too, or
+      // a crash loop leaks one session, CDP proxy and listening port per page —
+      // the same leak the deliberate teardown path fixes.
+      void this.options
+        .getAgentBrowserBridge?.()
+        ?.onTabClosed(webContentsId)
+        .catch(() => {})
       this.browserManager.unregisterGuest(page.browserPageId)
+      if (this.pages.size === 0) {
+        this.stopSweep()
+      }
     })
     const profile = page.profileId ? browserSessionRegistry.getProfile(page.profileId) : null
     this.browserManager.registerOffscreenGuest({
@@ -303,7 +351,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       worktreeId: page.worktreeId,
       sessionProfileId: page.profileId ?? null,
       userAgentMode: profile?.userAgentMode,
-      webContentsId: win.webContents.id
+      webContentsId
     })
   }
 
@@ -312,7 +360,12 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     if (!win || win.isDestroyed()) {
       return
     }
-    await loadOffscreenBrowserUrl(win, url)
+    page.loading = true
+    try {
+      await loadOffscreenBrowserUrl(win, url)
+    } finally {
+      page.loading = false
+    }
     if (page.window === win && !win.isDestroyed()) {
       page.title = win.webContents.getTitle() ?? page.title
       // Why: the reclaim clock must start when the page is ready, not when the
