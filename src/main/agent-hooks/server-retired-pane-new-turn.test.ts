@@ -41,7 +41,7 @@ const NEW_TURN_EVENT: Record<AgentHookSource, string | null> = {
   'command-code': null
 }
 
-function reviveRetiredPane(source: AgentHookSource, hookEventName: string): boolean {
+function reviveRetiredPane(source: AgentHookSource | undefined, hookEventName: string): boolean {
   const server = new AgentHookServer()
   // Why: retirement is what command completion leaves behind on a reusable shell pane.
   server.retirePaneAuthority(PANE)
@@ -50,9 +50,9 @@ function reviveRetiredPane(source: AgentHookSource, hookEventName: string): bool
       paneKey: PANE,
       tabId: 'tab-1',
       worktreeId: 'wt-1',
-      source,
+      ...(source === undefined ? {} : { source }),
       hookEventName,
-      payload: { state: 'working', prompt: 'after reuse', agentType: 'claude' }
+      payload: { state: 'working', prompt: 'after reuse', agentType: source }
     },
     'conn-1'
   )
@@ -74,9 +74,31 @@ describe("retired pane un-retires on each provider's own new-turn event", () => 
     expect(reviveRetiredPane(source, hookEventName as string)).toBe(true)
   })
 
+  // Why these two: every case above passes `source`, so the source-less compatibility path —
+  // the branch added for older relays — would otherwise ship with no coverage at all.
+  it('revives on a literal boundary when an older relay omits source', () => {
+    expect(reviveRetiredPane(undefined, 'UserPromptSubmit')).toBe(true)
+  })
+
+  it('cannot revive a non-literal provider when an older relay omits source', () => {
+    // Why pinned: this is the accepted cost of the legacy shim, not an oversight. Widening the
+    // literal list to "fix" it would re-create the two-literal gate this change removes.
+    expect(reviveRetiredPane(undefined, 'before_agent_start')).toBe(false)
+  })
+
+  it('revives on any event from a provider this build does not recognize', () => {
+    // Why fail open: a newer host can relay a 19th provider whose boundary name is unknown here.
+    // `isAgentHookSource` rejects it, so it must not fall through to the legacy literals and
+    // strand the pane permanently.
+    expect(reviveRetiredPane('future-provider-19' as AgentHookSource, 'SomethingNewEntirely')).toBe(
+      true
+    )
+  })
+
   it('leaves the pane retired for a source with no turn boundary', () => {
-    // Why: opencode/mimo-code/command-code have no new-turn event; reviving them would need a
-    // different signal, so the gate must stay closed rather than guess.
+    // Why: opencode/mimo-code/command-code have no new-turn event at all. Their real plugins
+    // never emit these literals either, so this closes a hole rather than removing behavior —
+    // no production traffic reached the old literal revival for them.
     expect(reviveRetiredPane('opencode', 'SessionStart')).toBe(false)
   })
 
