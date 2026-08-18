@@ -274,6 +274,37 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now orca-xvfb.service orca-serve.service
 ```
 
+## Browser Tab Renderer Reclamation
+
+Each browser page on a headless server is backed by its own hidden Electron
+window, so it costs a renderer process — several hundred MB, plus continuous
+CPU if the page animates. Agents open pages far more readily than they close
+them, so the server reclaims those renderers itself rather than relying on the
+agent to tidy up.
+
+An open page whose renderer has been reclaimed is **parked**: the page keeps
+its id, address, worktree and profile, `orca tab list` still shows it (marked
+`(parked)`, and `parked: true` under `--json`), and the next command that
+targets it transparently rebuilds the renderer and reloads the address. What a
+park does _not_ preserve is in-page JavaScript state — cookies and local
+storage live in the profile partition and survive, but an unsubmitted form or
+an SPA's in-memory state does not. A page is never parked while a paired
+client is streaming it or while a command is in flight.
+
+Two evictors decide what stays resident, mirroring terminal pane parking. The
+cap is the primary one:
+
+| Variable                               | Default  | Meaning                                                            |
+| -------------------------------------- | -------- | ------------------------------------------------------------------ |
+| `ORCA_HEADLESS_BROWSER_RESIDENT_LIMIT` | `4`      | Renderers kept resident. Least-recently-used pages park past this. |
+| `ORCA_HEADLESS_BROWSER_PARK_IDLE_MS`   | `300000` | A page parks after this long untouched, even under the cap.        |
+| `ORCA_HEADLESS_BROWSER_PARK_GRACE_MS`  | `30000`  | A page is never parked this soon after its last command.           |
+| `ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS`  | `15000`  | How often the server re-evaluates residency.                       |
+
+Raise the limit on a host with memory to spare, or set both the limit and the
+idle window very high to keep every page resident — at the cost this
+reclamation exists to avoid.
+
 ## CLI Install Note
 
 On a headless host, you do not need to open the desktop UI just to run the
@@ -838,7 +869,7 @@ refuse to run there and print the command to run on the machine you want.
 - Clients cannot connect: make sure `--pairing-address` is an address reachable
   from the client, and make sure firewalls allow the selected `--port`.
 - Journal shows `Another Orca instance is already running for this userData
-  profile` and the unit exits `3`: another process already owns the profile, so
+profile` and the unit exits `3`: another process already owns the profile, so
   `RestartPreventExitStatus=3` leaves the unit `failed` on purpose. Find the
   owner with `systemctl status orca-serve` and `pgrep -af orca`. Stop it (or
   keep it and leave the unit down), then run

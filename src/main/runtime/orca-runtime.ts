@@ -6605,6 +6605,15 @@ export class OrcaRuntimeService {
     return this.offscreenBrowserBackend
   }
 
+  // Why (STA-4341): the headless reclaimer asks the runtime before parking a
+  // page, so a streamed or mid-command page keeps its renderer.
+  isBrowserPagePinned(browserPageId: string): boolean {
+    return (
+      this.browserCommands.isBrowserPageStreamed(browserPageId) ||
+      this.agentBrowserBridge?.hasInFlightCommand(browserPageId) === true
+    )
+  }
+
   setEmulatorBridge(bridge: EmulatorBridge | null): void {
     this.emulatorBridge = bridge
   }

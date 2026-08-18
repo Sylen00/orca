@@ -1,0 +1,337 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { BrowserWindow } from 'electron'
+import type { AgentBrowserBridge } from './agent-browser-bridge'
+import type { BrowserManager } from './browser-manager'
+
+const createOffscreenBrowserWindow = vi.fn<(partition: string) => unknown>()
+const loadOffscreenBrowserUrl = vi.fn<(win: unknown, url: string) => Promise<void>>(async () => {})
+
+vi.mock('./offscreen-browser-window', () => ({
+  createOffscreenBrowserWindow: (partition: string) => createOffscreenBrowserWindow(partition),
+  loadOffscreenBrowserUrl: (win: unknown, url: string) => loadOffscreenBrowserUrl(win, url)
+}))
+
+vi.mock('./browser-session-registry', () => ({
+  browserSessionRegistry: {
+    getProfile: (id: string) => ({ id, partition: `persist:${id}`, label: id }),
+    getDefaultProfile: () => ({ id: 'default', partition: 'persist:default', label: 'Default' })
+  }
+}))
+
+const { OffscreenBrowserBackend } = await import('./offscreen-browser-backend')
+
+type FakeWindow = BrowserWindow & {
+  __id: number
+  __destroyed: boolean
+  __url: string
+  __destroyedListeners: (() => void)[]
+}
+
+let nextWebContentsId = 100
+
+function makeWindow(): FakeWindow {
+  const id = nextWebContentsId++
+  const win = {
+    __id: id,
+    __destroyed: false,
+    __url: 'about:blank',
+    __destroyedListeners: [] as (() => void)[],
+    isDestroyed: () => win.__destroyed,
+    destroy: () => {
+      win.__destroyed = true
+      for (const listener of win.__destroyedListeners) {
+        listener()
+      }
+    },
+    webContents: {
+      id,
+      isDestroyed: () => win.__destroyed,
+      getURL: () => win.__url,
+      getTitle: () => `title-${id}`,
+      once: (event: string, listener: () => void) => {
+        if (event === 'destroyed') {
+          win.__destroyedListeners.push(listener)
+        }
+      }
+    }
+  } as unknown as FakeWindow
+  return win
+}
+
+type Harness = {
+  backend: InstanceType<typeof OffscreenBrowserBackend>
+  manager: BrowserManager
+  bridge: AgentBrowserBridge
+  order: string[]
+  registered: Map<string, number>
+  windows: FakeWindow[]
+  clock: { value: number }
+}
+
+function createHarness(overrides: { pinned?: Set<string> } = {}): Harness {
+  const order: string[] = []
+  const registered = new Map<string, number>()
+  const windows: FakeWindow[] = []
+  const clock = { value: 1_000_000 }
+
+  createOffscreenBrowserWindow.mockImplementation(() => {
+    const win = makeWindow()
+    windows.push(win)
+    return win
+  })
+
+  const manager = {
+    registerOffscreenGuest: ({
+      browserPageId,
+      webContentsId
+    }: {
+      browserPageId: string
+      webContentsId: number
+    }) => {
+      order.push(`register:${browserPageId}:${webContentsId}`)
+      registered.set(browserPageId, webContentsId)
+    },
+    unregisterGuest: (browserPageId: string) => {
+      order.push(`unregister:${browserPageId}`)
+      registered.delete(browserPageId)
+    },
+    getGuestWebContentsId: (browserPageId: string) => registered.get(browserPageId) ?? null
+  } as unknown as BrowserManager
+
+  const bridge = {
+    onTabClosed: vi.fn(async (webContentsId: number) => {
+      order.push(`session-destroy:${webContentsId}`)
+    }),
+    onProcessSwap: vi.fn(async (browserPageId: string, webContentsId: number) => {
+      order.push(`process-swap:${browserPageId}:${webContentsId}`)
+    })
+  } as unknown as AgentBrowserBridge
+
+  const backend = new OffscreenBrowserBackend(manager, {
+    getAgentBrowserBridge: () => bridge,
+    isPagePinned: (id) => overrides.pinned?.has(id) === true,
+    now: () => clock.value
+  })
+
+  return { backend, manager, bridge, order, registered, windows, clock }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  nextWebContentsId = 100
+  process.env.ORCA_HEADLESS_BROWSER_RESIDENT_LIMIT = '2'
+  process.env.ORCA_HEADLESS_BROWSER_PARK_IDLE_MS = '60000'
+  process.env.ORCA_HEADLESS_BROWSER_PARK_GRACE_MS = '5000'
+  process.env.ORCA_HEADLESS_BROWSER_PARK_SWEEP_MS = '100000'
+})
+
+describe('OffscreenBrowserBackend reclamation', () => {
+  it('parks an idle page: renderer destroyed, page kept and listed', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a' })
+    const [pageId] = [...h.registered.keys()]
+
+    h.clock.value += 120_000
+    expect(await h.backend.reclaimIdlePages()).toEqual([pageId])
+
+    expect(h.windows[0].isDestroyed()).toBe(true)
+    expect(h.registered.has(pageId)).toBe(false)
+    expect(h.backend.listParkedPages()).toEqual([
+      {
+        browserPageId: pageId,
+        worktreeId: undefined,
+        profileId: 'default',
+        url: 'about:blank',
+        title: `title-${h.windows[0].webContents.id}`
+      }
+    ])
+  })
+
+  it('tears the helper session down before the mapping and the renderer go away', async () => {
+    // Why (STA-4341): the headless close path used to skip the bridge entirely,
+    // so every closed page left its agent-browser session and CDP proxy behind.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a' })
+    const [pageId] = [...h.registered.keys()]
+    h.order.length = 0
+
+    await h.backend.closeTab(pageId)
+
+    expect(h.order).toEqual([
+      `session-destroy:${h.windows[0].webContents.id}`,
+      `unregister:${pageId}`
+    ])
+    expect(h.windows[0].isDestroyed()).toBe(true)
+  })
+
+  it('tears the helper session down when parking too', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a' })
+    const [pageId] = [...h.registered.keys()]
+    h.order.length = 0
+
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.order).toEqual([
+      `session-destroy:${h.windows[0].webContents.id}`,
+      `unregister:${pageId}`
+    ])
+  })
+
+  it('wakes a parked page under the same id and reloads where it left off', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a' })
+    const [pageId] = [...h.registered.keys()]
+    h.windows[0].__url = 'https://example.test/moved'
+
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+    h.order.length = 0
+    loadOffscreenBrowserUrl.mockClear()
+
+    expect(await h.backend.wakeTab(pageId)).toBe(true)
+
+    const wokenId = h.windows[1].webContents.id
+    expect(h.windows).toHaveLength(2)
+    expect(h.registered.get(pageId)).toBe(wokenId)
+    expect(h.order).toEqual([`register:${pageId}:${wokenId}`, `process-swap:${pageId}:${wokenId}`])
+    expect(loadOffscreenBrowserUrl).toHaveBeenCalledWith(h.windows[1], 'https://example.test/moved')
+    expect(h.backend.listParkedPages()).toEqual([])
+  })
+
+  it('coalesces concurrent wakes into one renderer', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a' })
+    const [pageId] = [...h.registered.keys()]
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    const [first, second] = await Promise.all([
+      h.backend.wakeTab(pageId),
+      h.backend.wakeTab(pageId)
+    ])
+
+    expect([first, second]).toEqual([true, true])
+    expect(h.windows).toHaveLength(2)
+  })
+
+  it('reports false when waking a page it does not own', async () => {
+    const h = createHarness()
+    expect(await h.backend.wakeTab('nope')).toBe(false)
+  })
+
+  it('does not park a pinned page even when it is the oldest', async () => {
+    const h = createHarness({ pinned: new Set(['streamed']) })
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'streamed' })
+    h.clock.value += 1_000
+    await h.backend.createTab({ url: 'https://b', browserPageId: 'idle' })
+    h.clock.value += 120_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual(['idle'])
+  })
+
+  it('keeps the resident cap by evicting least-recently-used pages', async () => {
+    const h = createHarness()
+    for (const id of ['a', 'b', 'c', 'd']) {
+      await h.backend.createTab({ url: `https://example.test/${id}`, browserPageId: id })
+      h.clock.value += 1_000
+    }
+    // Why: past the grace floor but well inside the idle window, so the cap is
+    // provably the evictor here.
+    h.clock.value += 10_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual(['a', 'b'])
+    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a', 'b'])
+  })
+
+  it('reports the most recently used parked page for implicit targeting', async () => {
+    const h = createHarness()
+    for (const id of ['a', 'b', 'c', 'd']) {
+      await h.backend.createTab({ url: `https://example.test/${id}`, browserPageId: id })
+      h.clock.value += 1_000
+    }
+    h.clock.value += 10_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.backend.getMostRecentlyUsedParkedPageId()).toBe('b')
+  })
+
+  it('restarts the reclaim clock when a resident page is used', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a', browserPageId: 'a' })
+    h.clock.value += 120_000
+
+    // Why: waking a resident page must not rebuild its renderer, only mark it used.
+    expect(await h.backend.wakeTab('a')).toBe(true)
+    expect(h.windows).toHaveLength(1)
+    expect(await h.backend.reclaimIdlePages()).toEqual([])
+  })
+
+  it('does not let a command land on a renderer that a park is tearing down', async () => {
+    let releaseSession = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a', browserPageId: 'a' })
+    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
+    bridge.onTabClosed.mockImplementation(
+      async () => new Promise<void>((resolve) => (releaseSession = resolve))
+    )
+
+    h.clock.value += 120_000
+    const park = h.backend.reclaimIdlePages()
+    const wake = h.backend.wakeTab('a')
+    releaseSession()
+    await park
+    expect(await wake).toBe(true)
+
+    // The woken renderer is a fresh one, not the window the park destroyed.
+    expect(h.windows).toHaveLength(2)
+    expect(h.windows[0].isDestroyed()).toBe(true)
+    expect(h.windows[1].isDestroyed()).toBe(false)
+    expect(h.registered.get('a')).toBe(h.windows[1].webContents.id)
+  })
+
+  it('keeps a parked page after its renderer emits destroyed', async () => {
+    // Why: parking destroys the window on purpose; the crash handler must not
+    // read that as the page going away or the record is lost.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a', browserPageId: 'a' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.backend.listParkedPages().map((page) => page.browserPageId)).toEqual(['a'])
+  })
+
+  it('drops a page whose renderer dies on its own', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a', browserPageId: 'a' })
+
+    h.windows[0].destroy()
+
+    expect(h.backend.listParkedPages()).toEqual([])
+    expect(await h.backend.wakeTab('a')).toBe(false)
+  })
+
+  it('scopes parked listings and implicit targeting to a worktree', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a', worktreeId: 'wt-1' })
+    h.clock.value += 1_000
+    await h.backend.createTab({ url: 'https://b', browserPageId: 'b', worktreeId: 'wt-2' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    expect(h.backend.listParkedPages('wt-1').map((page) => page.browserPageId)).toEqual(['a'])
+    expect(h.backend.getMostRecentlyUsedParkedPageId('wt-2')).toBe('b')
+  })
+
+  it('destroys every page it owns on shutdown', async () => {
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    await h.backend.createTab({ url: 'https://b', browserPageId: 'b' })
+
+    h.backend.destroyAll()
+
+    expect(h.windows.every((win) => win.isDestroyed())).toBe(true)
+    expect(h.backend.listParkedPages()).toEqual([])
+  })
+})

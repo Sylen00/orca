@@ -1071,6 +1071,11 @@ export type BrowserTabInfo = {
   worktreeId?: string | null
   profileId?: string | null
   profileLabel?: string | null
+  // Why (STA-4341): a headless runtime reclaims an idle page's renderer while
+  // keeping the page. Parked pages stay listed and stay operable — the next
+  // command targeting one wakes it — but surfacing the state lets an agent see
+  // that its in-page JavaScript state did not survive.
+  parked?: boolean
 }
 
 export type BrowserTabListResult = {

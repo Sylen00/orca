@@ -1,30 +1,62 @@
 import { randomUUID } from 'node:crypto'
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
-import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-web-preferences'
-import type { BrowserBackend, BrowserBackendCreateTab } from './browser-backend'
+import type { AgentBrowserBridge } from './agent-browser-bridge'
+import type { BrowserBackend, BrowserBackendCreateTab, ParkedBrowserPage } from './browser-backend'
 import type { BrowserManager } from './browser-manager'
 import { browserSessionRegistry } from './browser-session-registry'
+import {
+  readOffscreenBrowserReclaimPolicy,
+  selectOffscreenBrowserPagesToPark,
+  type OffscreenBrowserReclaimPolicy
+} from './offscreen-browser-page-reclaim'
+import { createOffscreenBrowserWindow, loadOffscreenBrowserUrl } from './offscreen-browser-window'
 
-// Why: headless orca serve has no renderer window to host a <webview>, so each
-// browser page is backed by a main-process offscreen BrowserWindow. The window
-// is never shown — it exists only so its WebContents can be driven over CDP and
-// streamed via the existing screencast path. Verified on macOS and on headless
-// Linux under Xvfb (Electron --headless segfaults; a virtual display is
-// required there — provisioned in the serve image, not by this code).
+// Why (STA-4341): this backend is the lifecycle owner for headless browser
+// pages. It keeps the page identity an agent holds (`browserPageId`, URL,
+// worktree, profile) for as long as the page is open, but treats the renderer
+// process behind it as a reclaimable resource: an idle page is parked (renderer
+// destroyed, record kept) and woken on the next command that targets it.
 
-const DEFAULT_VIEWPORT_WIDTH = 1280
-const DEFAULT_VIEWPORT_HEIGHT = 800
-const LOAD_TIMEOUT_MS = 30_000
+type OffscreenPage = {
+  browserPageId: string
+  worktreeId?: string
+  profileId?: string
+  partition: string
+  url: string
+  title: string
+  /** null while parked — the page exists, its renderer does not. */
+  window: BrowserWindow | null
+  lastActivityAt: number
+}
+
+export type OffscreenBrowserBackendOptions = {
+  getAgentBrowserBridge?: () => AgentBrowserBridge | null
+  /** Pages a client is streaming or that have a command in flight. */
+  isPagePinned?: (browserPageId: string) => boolean
+  now?: () => number
+}
 
 export class OffscreenBrowserBackend implements BrowserBackend {
-  private readonly windowsByPageId = new Map<string, BrowserWindow>()
+  private readonly pages = new Map<string, OffscreenPage>()
+  /** Renderer teardowns this backend initiated, keyed by page. Park and close
+   *  both destroy the window on purpose, so the crash handler stands down for
+   *  them — and a wake waits on one rather than racing it. */
+  private readonly releasing = new Map<string, Promise<void>>()
+  private readonly waking = new Map<string, Promise<boolean>>()
+  private readonly policy: OffscreenBrowserReclaimPolicy
+  private sweepTimer: NodeJS.Timeout | null = null
 
-  constructor(private readonly browserManager: BrowserManager) {}
+  constructor(
+    private readonly browserManager: BrowserManager,
+    private readonly options: OffscreenBrowserBackendOptions = {}
+  ) {
+    this.policy = readOffscreenBrowserReclaimPolicy()
+  }
 
   async createTab(params: BrowserBackendCreateTab): Promise<{ browserPageId: string }> {
     const browserPageId = params.browserPageId ?? randomUUID()
-    if (this.windowsByPageId.has(browserPageId)) {
+    if (this.pages.has(browserPageId)) {
       throw new Error(`Browser page ${browserPageId} already exists`)
     }
     // Why: profiles map to Electron partitions; using the profile's partition
@@ -32,142 +64,274 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     const profile = params.profileId
       ? browserSessionRegistry.getProfile(params.profileId)
       : browserSessionRegistry.getDefaultProfile()
-    const partition = profile?.partition ?? ORCA_BROWSER_PARTITION
-
-    const win = new BrowserWindow({
-      show: false,
-      width: DEFAULT_VIEWPORT_WIDTH,
-      height: DEFAULT_VIEWPORT_HEIGHT,
-      webPreferences: {
-        // Why: offscreen pages are the SSH/headless browser backend; keep their
-        // HTML fullscreen behavior aligned with desktop <webview> guests.
-        ...ORCA_BROWSER_GUEST_WEB_PREFERENCES,
-        partition,
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false
-      }
-    })
-
-    this.windowsByPageId.set(browserPageId, win)
-
-    // Why: if the offscreen window is destroyed out from under us (crash, app
-    // teardown), drop the registry entry so commands fail cleanly instead of
-    // resolving a dead WebContents.
-    win.webContents.once('destroyed', () => {
-      this.windowsByPageId.delete(browserPageId)
-      this.browserManager.unregisterGuest(browserPageId)
-    })
-
-    // Why: register the guest and return immediately so the new tab appears
-    // without waiting for the page to finish loading. Previously createTab
-    // awaited the full navigation, so clicking "New Browser Tab" did nothing for
-    // up to a second on real URLs. The page loads asynchronously and streams
-    // once it paints; a failed load leaves the (usable) tab open, matching how a
-    // normal browser tab survives a failed navigation.
-    this.browserManager.registerOffscreenGuest({
+    const url = params.url || 'about:blank'
+    const page: OffscreenPage = {
       browserPageId,
       worktreeId: params.worktreeId,
-      sessionProfileId: profile?.id ?? null,
-      userAgentMode: profile?.userAgentMode,
-      webContentsId: win.webContents.id
-    })
-
-    const url = params.url || 'about:blank'
-    void this.loadUrl(win, url).catch((error) => {
+      profileId: profile?.id ?? undefined,
+      partition: profile?.partition ?? ORCA_BROWSER_PARTITION,
+      url,
+      title: '',
+      window: null,
+      lastActivityAt: this.now()
+    }
+    this.pages.set(browserPageId, page)
+    // Why: register the guest and return immediately so the new tab appears
+    // without waiting for the page to finish loading. A failed load leaves the
+    // (usable) tab open, matching how a normal browser tab survives one.
+    this.materialize(page)
+    void this.loadPage(page, url).catch((error) => {
       console.warn(
         '[offscreen-browser] page load failed:',
         error instanceof Error ? error.message : String(error)
       )
     })
-
+    this.ensureSweepScheduled()
     return { browserPageId }
   }
 
   async closeTab(browserPageId: string): Promise<void> {
-    const win = this.windowsByPageId.get(browserPageId)
-    this.windowsByPageId.delete(browserPageId)
-    this.browserManager.unregisterGuest(browserPageId)
-    if (win && !win.isDestroyed()) {
-      win.destroy()
+    const page = this.pages.get(browserPageId)
+    this.pages.delete(browserPageId)
+    this.waking.delete(browserPageId)
+    await this.releaseRenderer(page ?? null, browserPageId)
+    if (this.pages.size === 0) {
+      this.stopSweep()
     }
   }
 
-  getWebContentsId(browserPageId: string): number | null {
-    const win = this.windowsByPageId.get(browserPageId)
-    return win && !win.isDestroyed() ? win.webContents.id : null
+  /**
+   * Make a page's renderer resident and restart its reclaim clock. Cheap and
+   * idempotent for a page that never parked, so command routing can call it
+   * unconditionally; that is also what serialises a command against a park
+   * that is already tearing the renderer down.
+   */
+  async wakeTab(browserPageId: string): Promise<boolean> {
+    const page = this.pages.get(browserPageId)
+    if (!page) {
+      return false
+    }
+    page.lastActivityAt = this.now()
+    const releasing = this.releasing.get(browserPageId)
+    if (!releasing && page.window && !page.window.isDestroyed()) {
+      return true
+    }
+    const inFlight = this.waking.get(browserPageId)
+    if (inFlight) {
+      return inFlight
+    }
+    const wake = (async (): Promise<boolean> => {
+      await releasing
+      if (!this.pages.has(browserPageId)) {
+        return false
+      }
+      if (page.window && !page.window.isDestroyed()) {
+        return true
+      }
+      const previousWebContentsId = this.browserManager.getGuestWebContentsId(browserPageId)
+      this.materialize(page)
+      const bridge = this.options.getAgentBrowserBridge?.() ?? null
+      const webContentsId = page.window?.webContents.id
+      if (bridge && webContentsId != null) {
+        // Why: same page id, new renderer — reuse the existing process-swap
+        // path so the stale helper session and CDP proxy are torn down.
+        await bridge.onProcessSwap(browserPageId, webContentsId, previousWebContentsId ?? undefined)
+      }
+      await this.loadPage(page, page.url).catch(() => {
+        // A parked page whose URL no longer loads stays open and reports the
+        // failure through the same load-error surface as a live page.
+      })
+      page.lastActivityAt = this.now()
+      return true
+    })()
+    this.waking.set(browserPageId, wake)
+    try {
+      return await wake
+    } finally {
+      this.waking.delete(browserPageId)
+    }
+  }
+
+  listParkedPages(worktreeId?: string): ParkedBrowserPage[] {
+    const parked: ParkedBrowserPage[] = []
+    for (const page of this.pages.values()) {
+      if (page.window && !page.window.isDestroyed()) {
+        continue
+      }
+      if (worktreeId && page.worktreeId !== worktreeId) {
+        continue
+      }
+      parked.push({
+        browserPageId: page.browserPageId,
+        worktreeId: page.worktreeId,
+        profileId: page.profileId,
+        url: page.url,
+        title: page.title
+      })
+    }
+    return parked
+  }
+
+  /** Most-recently-used parked page in a worktree, for implicit targeting. */
+  getMostRecentlyUsedParkedPageId(worktreeId?: string): string | null {
+    let best: OffscreenPage | null = null
+    for (const page of this.pages.values()) {
+      if (page.window && !page.window.isDestroyed()) {
+        continue
+      }
+      if (worktreeId && page.worktreeId !== worktreeId) {
+        continue
+      }
+      if (!best || page.lastActivityAt > best.lastActivityAt) {
+        best = page
+      }
+    }
+    return best?.browserPageId ?? null
   }
 
   destroyAll(): void {
-    for (const [pageId, win] of this.windowsByPageId) {
+    this.stopSweep()
+    for (const [pageId, page] of this.pages) {
       this.browserManager.unregisterGuest(pageId)
-      if (!win.isDestroyed()) {
-        win.destroy()
+      if (page.window && !page.window.isDestroyed()) {
+        page.window.destroy()
       }
     }
-    this.windowsByPageId.clear()
+    this.pages.clear()
+    this.waking.clear()
   }
 
-  private async loadUrl(win: BrowserWindow, url: string): Promise<void> {
-    const wc = win.webContents
-    await new Promise<void>((resolve, reject) => {
-      let settled = false
-      const timer = setTimeout(() => {
-        if (settled) {
-          return
-        }
-        settled = true
-        cleanup()
-        // Why: about:blank and slow pages can resolve via timeout without a
-        // did-finish-load; treat that as success so the tab is still operable.
-        resolve()
-      }, LOAD_TIMEOUT_MS)
+  /** Park every page the policy no longer wants resident. Exposed for tests. */
+  async reclaimIdlePages(): Promise<string[]> {
+    const now = this.now()
+    const resident = [...this.pages.values()].filter(
+      (page) => page.window && !page.window.isDestroyed() && !this.releasing.has(page.browserPageId)
+    )
+    const doomed = selectOffscreenBrowserPagesToPark(
+      resident.map((page) => ({
+        browserPageId: page.browserPageId,
+        lastActivityAt: page.lastActivityAt,
+        pinned: this.options.isPagePinned?.(page.browserPageId) === true
+      })),
+      now,
+      this.policy
+    )
+    for (const browserPageId of doomed) {
+      await this.parkPage(browserPageId)
+    }
+    return doomed
+  }
 
-      const onFinish = (): void => {
-        if (settled) {
-          return
-        }
-        settled = true
-        cleanup()
-        resolve()
-      }
-      const onFail = (
-        _e: unknown,
-        errorCode: number,
-        errorDescription: string,
-        _validatedURL: string,
-        isMainFrame: boolean
-      ): void => {
-        // Why: subframe/iframe (e.g. ad/tracker) load failures also fire
-        // did-fail-load. Only the main frame failing means the page itself
-        // failed; ignore the rest or an otherwise-usable page gets rejected.
-        if (!isMainFrame) {
-          return
-        }
-        if (settled) {
-          return
-        }
-        settled = true
-        cleanup()
-        // Why: aborted loads (-3) happen on redirects/SPA navigations and are not
-        // real failures; the page is still usable.
-        if (errorCode === -3) {
-          resolve()
-          return
-        }
-        reject(new Error(`${errorDescription} (${errorCode})`))
-      }
-      const cleanup = (): void => {
-        clearTimeout(timer)
-        wc.removeListener('did-finish-load', onFinish)
-        wc.removeListener('did-fail-load', onFail)
-      }
+  private async parkPage(browserPageId: string): Promise<void> {
+    const page = this.pages.get(browserPageId)
+    if (!page?.window || page.window.isDestroyed()) {
+      return
+    }
+    // Why: capture the committed address before teardown so a woken page
+    // returns to where the agent left it, not to its original create URL.
+    const wc = page.window.webContents
+    const committed = wc.getURL()
+    if (committed && !committed.startsWith('chrome-error://')) {
+      page.url = committed
+    }
+    page.title = wc.getTitle() ?? page.title
+    await this.releaseRenderer(page, browserPageId)
+    page.window = null
+  }
 
-      wc.on('did-finish-load', onFinish)
-      wc.on('did-fail-load', onFail)
-      void wc.loadURL(url).catch(() => {
-        // loadURL rejects on aborted navigations; did-fail-load handles the rest.
-      })
+  // Why: teardown order matters — the bridge must destroy the helper session and
+  // detach its debugger while the WebContents is still alive and still mapped,
+  // or the session, its CDP proxy and its listening port outlive the page.
+  private async releaseRenderer(page: OffscreenPage | null, browserPageId: string): Promise<void> {
+    const pending = this.releasing.get(browserPageId)
+    if (pending) {
+      await pending
+      return
+    }
+    const release = this.runReleaseRenderer(page, browserPageId)
+    this.releasing.set(browserPageId, release)
+    try {
+      await release
+    } finally {
+      if (this.releasing.get(browserPageId) === release) {
+        this.releasing.delete(browserPageId)
+      }
+    }
+  }
+
+  private async runReleaseRenderer(
+    page: OffscreenPage | null,
+    browserPageId: string
+  ): Promise<void> {
+    const bridge = this.options.getAgentBrowserBridge?.() ?? null
+    const webContentsId = this.browserManager.getGuestWebContentsId(browserPageId)
+    if (bridge && webContentsId != null) {
+      await bridge.onTabClosed(webContentsId)
+    }
+    this.browserManager.unregisterGuest(browserPageId)
+    if (page?.window && !page.window.isDestroyed()) {
+      page.window.destroy()
+    }
+  }
+
+  private materialize(page: OffscreenPage): void {
+    const win = createOffscreenBrowserWindow(page.partition)
+    page.window = win
+    // Why: if the window is destroyed out from under us (crash, app teardown),
+    // drop the page so commands fail cleanly instead of resolving a dead
+    // WebContents. Parking destroys it deliberately, so it opts out here.
+    win.webContents.once('destroyed', () => {
+      if (this.releasing.has(page.browserPageId) || page.window !== win) {
+        return
+      }
+      this.pages.delete(page.browserPageId)
+      this.browserManager.unregisterGuest(page.browserPageId)
     })
+    const profile = page.profileId ? browserSessionRegistry.getProfile(page.profileId) : null
+    this.browserManager.registerOffscreenGuest({
+      browserPageId: page.browserPageId,
+      worktreeId: page.worktreeId,
+      sessionProfileId: page.profileId ?? null,
+      userAgentMode: profile?.userAgentMode,
+      webContentsId: win.webContents.id
+    })
+  }
+
+  private async loadPage(page: OffscreenPage, url: string): Promise<void> {
+    const win = page.window
+    if (!win || win.isDestroyed()) {
+      return
+    }
+    await loadOffscreenBrowserUrl(win, url)
+    if (page.window === win && !win.isDestroyed()) {
+      page.title = win.webContents.getTitle() ?? page.title
+      // Why: the reclaim clock must start when the page is ready, not when the
+      // create call returned, or a slow load can be parked mid-flight.
+      page.lastActivityAt = this.now()
+    }
+  }
+
+  private ensureSweepScheduled(): void {
+    if (this.sweepTimer) {
+      return
+    }
+    this.sweepTimer = setInterval(() => {
+      void this.reclaimIdlePages().catch(() => {
+        // A failed park is retried on the next sweep.
+      })
+    }, this.policy.sweepIntervalMs)
+    // Why: reclamation must never be the reason the process stays alive.
+    this.sweepTimer.unref?.()
+  }
+
+  private stopSweep(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer)
+      this.sweepTimer = null
+    }
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now()
   }
 }

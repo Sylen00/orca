@@ -708,6 +708,12 @@ export class AgentBrowserBridge {
 
   // ── Worktree-scoped tab queries ──
 
+  // Why (STA-4341): the headless reclaimer must never park a page that is
+  // mid-command; the per-session queue already knows when one is executing.
+  hasInFlightCommand(browserPageId: string): boolean {
+    return this.processingQueues.has(`orca-tab-${browserPageId}`)
+  }
+
   getRegisteredTabs(worktreeId?: string): Map<string, number> {
     const all = this.browserManager.getWebContentsIdByTabId()
     if (!worktreeId) {
