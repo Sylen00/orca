@@ -1123,7 +1123,7 @@ export class AgentHookServer {
 
   private getAgentStatusDisposition(
     paneKey: string,
-    event?: { hookEventName?: string; isReplay?: boolean }
+    event?: { source?: AgentHookSource; hookEventName?: string; isReplay?: boolean }
   ): 'accept' | 'restart' | 'suppress' {
     const ownerPaneKey = this.resolvePaneKeyAlias(paneKey)
     const paneRetired =
@@ -1137,12 +1137,17 @@ export class AgentHookServer {
       return 'accept'
     }
     // Why: command completion retires launch authority but leaves its shell pane reusable.
-    // A live SessionStart proves a new agent process owns the retired pane just like a
+    // A live new-turn event proves a new agent process owns the retired pane just like a
     // fresh prompt does — without it, a session resumed in a reused pane stays rowless (STA-3386).
-    if (
-      (event?.hookEventName === 'UserPromptSubmit' || event?.hookEventName === 'SessionStart') &&
-      event.isReplay !== true
-    ) {
+    // Why the classifier, not literals: only 5 of 18 sources name their boundary
+    // `UserPromptSubmit`/`SessionStart`; the rest stayed retired forever.
+    // Why the literal fallback: `source` is optional on the remote envelope, and an older
+    // relay omits it — without this, every source-less remote pane would stay retired forever.
+    const isNewTurn =
+      event?.source !== undefined
+        ? isNewTurnEvent(event.source, event.hookEventName)
+        : event?.hookEventName === 'UserPromptSubmit' || event?.hookEventName === 'SessionStart'
+    if (isNewTurn && event?.isReplay !== true) {
       this.closedAgentStatusPaneKeys.delete(paneKey)
       this.closedAgentStatusPaneKeys.delete(ownerPaneKey)
       return 'restart'
@@ -2249,6 +2254,7 @@ export class AgentHookServer {
         ? envelope.compactTrigger
         : undefined
     const statusDisposition = this.getAgentStatusDisposition(paneKey, {
+      source,
       hookEventName,
       isReplay: envelope.isReplay === true
     })
@@ -2467,6 +2473,7 @@ export class AgentHookServer {
         const normalized = this.normalizeLocalHookPayload(source, aliasedBody)
         const statusDisposition = normalized.event
           ? this.getAgentStatusDisposition(normalized.event.paneKey, {
+              source,
               hookEventName: normalized.event.hookEventName,
               isReplay: normalized.event.isReplay
             })
