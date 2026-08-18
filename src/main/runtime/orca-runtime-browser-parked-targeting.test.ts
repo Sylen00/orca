@@ -197,6 +197,17 @@ describe('headless parked-page targeting', () => {
     expect(fake.closedPageIds).toEqual(['parked-c'])
   })
 
+  it('resolves `tab current` when the only page is parked', async () => {
+    const { RuntimeBrowserCommands } = await import('./orca-runtime-browser')
+    const fake = createFakeHeadlessHost([], ['parked-a'])
+    const commands = new RuntimeBrowserCommands(fake.host)
+
+    const current = await commands.browserTabCurrent({ worktree: 'id:wt-1' })
+
+    expect(current.tab.browserPageId).toBe('parked-a')
+    expect(fake.wakeCalls).toContain('parked-a')
+  })
+
   it('counts `tab current` as using the page it names', async () => {
     // Why: without this an agent could poll `tab current` continuously and
     // still have that very page reclaimed under it.

@@ -96,6 +96,7 @@ type Harness = {
   pagesChanged: (string | undefined)[]
   certificateFailurePageIds: Set<string>
   downloadingPageIds: Set<string>
+  downloadProgressAt: number
 }
 
 function createHarness(
@@ -111,6 +112,7 @@ function createHarness(
     activePageId: overrides.activePageId,
     certificateFailurePageIds: new Set<string>(overrides.certificateFailurePageIds ?? []),
     downloadingPageIds: new Set<string>(overrides.downloadingPageIds ?? []),
+    downloadProgressAt: 1_000_000,
     pagesChanged: [] as (string | undefined)[]
   }
   const order: string[] = []
@@ -143,8 +145,8 @@ function createHarness(
     getBrowserPageLoadError: () => overrides.loadError ?? null,
     getBrowserPageCertificateFailure: (browserPageId: string) =>
       state.certificateFailurePageIds.has(browserPageId) ? { challengeId: 'c' } : null,
-    hasActiveBrowserPageDownload: (browserPageId: string) =>
-      state.downloadingPageIds.has(browserPageId)
+    getBrowserPageActiveDownloadProgressAt: (browserPageId: string) =>
+      state.downloadingPageIds.has(browserPageId) ? state.downloadProgressAt : null
   } as unknown as BrowserManager
 
   const bridge = {
@@ -179,7 +181,10 @@ function createHarness(
       return state.pagesChanged
     },
     certificateFailurePageIds: state.certificateFailurePageIds,
-    downloadingPageIds: state.downloadingPageIds
+    downloadingPageIds: state.downloadingPageIds,
+    set downloadProgressAt(value: number) {
+      state.downloadProgressAt = value
+    }
   }
 }
 
@@ -423,18 +428,56 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.pagesChanged).toEqual(['wt-1'])
   })
 
-  it('does not park a page that is still writing a download', async () => {
+  it('does not park a page whose download is still advancing', async () => {
     // Why: releasing a renderer unregisters its guest, and browser-manager
     // cancels that page's in-flight downloads on unregister. The desktop guest
     // budget vetoes eviction for the same reason.
     const h = createHarness({ downloadingPageIds: ['a'] })
     await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
     h.clock.value += 120_000
+    h.downloadProgressAt = h.clock.value
 
     expect(await h.backend.reclaimIdlePages()).toEqual([])
 
     h.downloadingPageIds.delete('a')
     expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
+  })
+
+  it('parks a page whose download has stalled so the cap cannot be defeated', async () => {
+    // Why: a download that never progresses again would otherwise pin its
+    // renderer forever, and one stalled download per page would defeat the
+    // resident cap outright — the same shape as the load-pin bug before it.
+    const h = createHarness({ downloadingPageIds: ['a'] })
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.downloadProgressAt = h.clock.value
+    h.clock.value += 120_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
+  })
+
+  it('gives up a park when the page starts a download during teardown', async () => {
+    // Why: teardown awaits the helper session while the page keeps running, and
+    // the unregister that follows would cancel a download begun in that window.
+    let releaseTeardown = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
+    bridge.onTabClosed.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => (releaseTeardown = resolve))
+      // The page began downloading while its helper session was torn down.
+      h.downloadingPageIds.add('a')
+      h.downloadProgressAt = h.clock.value
+    })
+
+    h.clock.value += 120_000
+    const sweep = h.backend.reclaimIdlePages()
+    releaseTeardown()
+    await sweep
+
+    // The page kept its renderer and its registration rather than losing the write.
+    expect(h.backend.listParkedPages()).toEqual([])
+    expect(h.windows[0].isDestroyed()).toBe(false)
+    expect(h.registered.get('a')).toBe(h.windows[0].webContents.id)
   })
 
   it('does not park a page waiting on a certificate decision', async () => {

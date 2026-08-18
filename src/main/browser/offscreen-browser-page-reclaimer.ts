@@ -3,6 +3,7 @@ import type {
   OffscreenBrowserPage
 } from './offscreen-browser-open-pages'
 import {
+  OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS,
   selectOffscreenBrowserPagesToClose,
   selectOffscreenBrowserPagesToPark,
   type OffscreenBrowserReclaimPolicy
@@ -21,8 +22,14 @@ export type OffscreenBrowserReclaimerDeps = {
   policy: OffscreenBrowserReclaimPolicy
   /** A teardown this backend already started for the page. */
   isReleasing: (browserPageId: string) => boolean
-  /** Anything depending on the page's renderer right now. */
-  isPinned: (page: OffscreenBrowserPage) => boolean
+  /** A wake still rebuilding the page's renderer. */
+  isWaking: (browserPageId: string) => boolean
+  /** A certificate challenge the page is blocked on. */
+  hasCertificateChallenge: (browserPageId: string) => boolean
+  /** When the page's in-flight downloads last advanced, null when it has none. */
+  activeDownloadProgressAt: (browserPageId: string) => number | null
+  /** A client streaming the page, or a command in flight against it. */
+  isHostPinned: (browserPageId: string) => boolean
   park: (browserPageId: string) => Promise<void>
   close: (browserPageId: string) => Promise<void>
   now: () => number
@@ -117,6 +124,34 @@ export class OffscreenBrowserPageReclaimer {
     }
   }
 
+  // Why: a page is off limits while anything depends on its renderer — a client
+  // streaming it, a command in flight, its first navigation still committing, a
+  // wake still rebuilding it, a certificate decision it is blocked on, or a
+  // download it is still writing. `loading` is bounded by the load helper's own
+  // timeout, so it cannot hold a renderer forever; a navigation still pending
+  // past that timeout is deliberately parkable, and waking retries the address.
+  isPinned(page: OffscreenBrowserPage): boolean {
+    return (
+      page.loading ||
+      this.deps.isWaking(page.browserPageId) ||
+      // Why: a challenge id dies with the renderer, so parking would discard
+      // both the warning and the ability to approve it.
+      this.deps.hasCertificateChallenge(page.browserPageId) ||
+      this.hasAdvancingDownload(page.browserPageId) ||
+      this.deps.isHostPinned(page.browserPageId)
+    )
+  }
+
+  // Why: releasing a renderer unregisters its guest, and that cancels the page's
+  // in-flight downloads — the desktop guest budget vetoes eviction for the same
+  // reason (browser-guest-worktree-retention.ts). Bounded by progress, because a
+  // download that stalls forever would otherwise pin its renderer forever, and
+  // one stalled download per page would defeat the resident cap outright.
+  hasAdvancingDownload(browserPageId: string): boolean {
+    const progressAt = this.deps.activeDownloadProgressAt(browserPageId)
+    return progressAt !== null && this.deps.now() - progressAt < OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS
+  }
+
   private toCandidate(page: OffscreenBrowserPage): {
     browserPageId: string
     lastActivityAt: number
@@ -125,7 +160,7 @@ export class OffscreenBrowserPageReclaimer {
     return {
       browserPageId: page.browserPageId,
       lastActivityAt: page.lastActivityAt,
-      pinned: this.deps.isPinned(page)
+      pinned: this.isPinned(page)
     }
   }
 
@@ -135,8 +170,7 @@ export class OffscreenBrowserPageReclaimer {
       return false
     }
     return (
-      !this.deps.isPinned(page) &&
-      this.deps.now() - page.lastActivityAt >= this.deps.policy.parkGraceMs
+      !this.isPinned(page) && this.deps.now() - page.lastActivityAt >= this.deps.policy.parkGraceMs
     )
   }
 }

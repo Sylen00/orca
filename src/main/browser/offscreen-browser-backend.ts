@@ -5,10 +5,7 @@ import type { AgentBrowserBridge } from './agent-browser-bridge'
 import type { BrowserBackend, BrowserBackendCreateTab, ParkedBrowserPage } from './browser-backend'
 import type { BrowserManager } from './browser-manager'
 import { browserSessionRegistry } from './browser-session-registry'
-import {
-  readOffscreenBrowserReclaimPolicy,
-  type OffscreenBrowserReclaimPolicy
-} from './offscreen-browser-page-reclaim'
+import { readOffscreenBrowserReclaimPolicy } from './offscreen-browser-page-reclaim'
 import { OffscreenBrowserPageReclaimer } from './offscreen-browser-page-reclaimer'
 import {
   OffscreenBrowserOpenPages,
@@ -36,21 +33,24 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   /** Renderer teardowns this backend initiated, keyed by page. Park and close
    *  both destroy the window on purpose, so the crash handler stands down for
    *  them — and a wake waits on one rather than racing it. */
-  private readonly releasing = new Map<string, Promise<void>>()
+  private readonly releasing = new Map<string, Promise<boolean>>()
   private readonly waking = new Map<string, Promise<boolean>>()
-  private readonly policy: OffscreenBrowserReclaimPolicy
   private readonly reclaimer: OffscreenBrowserPageReclaimer
 
   constructor(
     private readonly browserManager: BrowserManager,
     private readonly options: OffscreenBrowserBackendOptions = {}
   ) {
-    this.policy = readOffscreenBrowserReclaimPolicy()
     this.reclaimer = new OffscreenBrowserPageReclaimer({
       pages: this.pages,
-      policy: this.policy,
+      policy: readOffscreenBrowserReclaimPolicy(),
       isReleasing: (browserPageId) => this.releasing.has(browserPageId),
-      isPinned: (page) => this.isPagePinned(page),
+      isWaking: (browserPageId) => this.waking.has(browserPageId),
+      hasCertificateChallenge: (browserPageId) =>
+        this.browserManager.getBrowserPageCertificateFailure(browserPageId) !== null,
+      activeDownloadProgressAt: (browserPageId) =>
+        this.browserManager.getBrowserPageActiveDownloadProgressAt(browserPageId),
+      isHostPinned: (browserPageId) => this.options.isPagePinned?.(browserPageId) === true,
       park: (browserPageId) => this.parkPage(browserPageId),
       close: (browserPageId) => this.closeTab(browserPageId),
       now: () => this.now()
@@ -227,31 +227,6 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     return this.reclaimer.sweep()
   }
 
-  // Why: a page is off limits while anything is depending on its renderer —
-  // a client streaming it, a command in flight, its first navigation still
-  // committing, or a wake still rebuilding it. The wake case matters because a
-  // wake is resident but not yet loading while it awaits the process swap.
-  private isPagePinned(page: OffscreenBrowserPage): boolean {
-    // Why: `loading` is bounded by the load helper's own timeout, so it cannot
-    // be used to hold a renderer forever. A navigation still pending past that
-    // timeout is deliberately parkable — pinning it would let one stalled page
-    // per create defeat the resident cap outright, and waking simply retries
-    // the address.
-    return (
-      page.loading ||
-      this.waking.has(page.browserPageId) ||
-      // Why: a page blocked on a certificate decision is work waiting on an
-      // answer. Its challenge id dies with the renderer, so parking it would
-      // discard both the warning and the ability to approve it.
-      this.browserManager.getBrowserPageCertificateFailure(page.browserPageId) !== null ||
-      // Why: releasing a renderer unregisters its guest, and that cancels the
-      // page's in-flight downloads. The desktop guest budget vetoes eviction
-      // for the same reason (browser-guest-worktree-retention.ts).
-      this.browserManager.hasActiveBrowserPageDownload(page.browserPageId) ||
-      this.options.isPagePinned?.(page.browserPageId) === true
-    )
-  }
-
   private async parkPage(browserPageId: string): Promise<void> {
     const page = this.pages.get(browserPageId)
     if (!page?.window || page.window.isDestroyed()) {
@@ -269,7 +244,17 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       this.options
         .getAgentBrowserBridge?.()
         ?.isActiveBrowserPage(browserPageId, page.worktreeId) === true
-    await this.releaseRenderer(page, browserPageId)
+    // Why the abort: teardown awaits the helper session, and the page keeps
+    // running throughout. A download started inside that window would be
+    // cancelled by the unregister that follows, so give up the park instead.
+    // The session is already gone, but the next command recreates it.
+    const released = await this.releaseRenderer(page, browserPageId, () =>
+      this.reclaimer.hasAdvancingDownload(browserPageId)
+    )
+    if (!released) {
+      page.activeWhenParked = false
+      return
+    }
     page.window = null
     if (page.activeWhenParked) {
       // Why: teardown promotes another live tab to active, which then parks
@@ -281,19 +266,21 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   // Why: teardown order matters — the bridge must destroy the helper session and
   // detach its debugger while the WebContents is still alive and still mapped,
   // or the session, its CDP proxy and its listening port outlive the page.
+  /** Resolves false when abortAfterSessionTeardown vetoed the release. */
   private async releaseRenderer(
     page: OffscreenBrowserPage | null,
-    browserPageId: string
-  ): Promise<void> {
+    browserPageId: string,
+    abortAfterSessionTeardown?: () => boolean
+  ): Promise<boolean> {
     const pending = this.releasing.get(browserPageId)
     if (pending) {
       await pending
-      return
+      return true
     }
-    const release = this.runReleaseRenderer(page, browserPageId)
+    const release = this.runReleaseRenderer(page, browserPageId, abortAfterSessionTeardown)
     this.releasing.set(browserPageId, release)
     try {
-      await release
+      return await release
     } finally {
       if (this.releasing.get(browserPageId) === release) {
         this.releasing.delete(browserPageId)
@@ -303,17 +290,22 @@ export class OffscreenBrowserBackend implements BrowserBackend {
 
   private async runReleaseRenderer(
     page: OffscreenBrowserPage | null,
-    browserPageId: string
-  ): Promise<void> {
+    browserPageId: string,
+    abortAfterSessionTeardown?: () => boolean
+  ): Promise<boolean> {
     const bridge = this.options.getAgentBrowserBridge?.() ?? null
     const webContentsId = this.browserManager.getGuestWebContentsId(browserPageId)
     if (bridge && webContentsId != null) {
       await bridge.onTabClosed(webContentsId)
     }
+    if (abortAfterSessionTeardown?.() === true) {
+      return false
+    }
     this.browserManager.unregisterGuest(browserPageId)
     if (page?.window && !page.window.isDestroyed()) {
       page.window.destroy()
     }
+    return true
   }
 
   private materialize(page: OffscreenBrowserPage): void {

@@ -18,6 +18,13 @@ export const OFFSCREEN_BROWSER_PARK_GRACE_MS = 30_000
 export const OFFSCREEN_BROWSER_SWEEP_INTERVAL_MS = 15_000
 /** Parked page records retained before the oldest are closed outright. */
 export const OFFSCREEN_BROWSER_RETAINED_PAGE_LIMIT = 100
+/**
+ * How long a download keeps its page resident after its last progress. Parking
+ * cancels a page's in-flight downloads, so an advancing one must veto — but a
+ * download that stalls forever must not, or one stalled download per page would
+ * defeat the resident cap outright.
+ */
+export const OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS = 60_000
 
 export type OffscreenBrowserReclaimPolicy = {
   residentLimit: number
