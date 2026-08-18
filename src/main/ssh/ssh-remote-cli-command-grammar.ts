@@ -15,8 +15,7 @@ export const LINEAR_PROJECT_EDIT_CLEAR_FLAGS = [
   'clear-members',
   'clear-labels',
   'clear-start-date',
-  'clear-target-date',
-  'clear-icon'
+  'clear-target-date'
 ] as const
 
 const LINEAR_PROJECT_EDIT_REPEATABLE_FLAGS = ['team', 'member', 'label'] as const

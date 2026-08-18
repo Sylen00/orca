@@ -5,6 +5,10 @@ import {
 } from '../../shared/linear/project-agent-writes'
 import { getClients } from './client'
 import { normalizeLinearLineEndings } from './linear-text-digest'
+import {
+  linearProjectContentWriteValue,
+  sameLinearProjectContent
+} from './project-content-rewrites'
 import { getProjectByIdForAgent } from './project-create'
 import {
   linearProjectEntityIds,
@@ -79,7 +83,7 @@ export async function editProjectFieldsForAgent(
 
   try {
     await runLinearWrite(entry, options.signal, async (client) => {
-      const result = await client.updateProject(projectId, pending)
+      const result = await client.updateProject(projectId, projectUpdateInput(pending))
       if (!result.success) {
         throw new LinearWriteFailure('failed', 'Linear project edit failed')
       }
@@ -108,6 +112,14 @@ export async function editProjectFieldsForAgent(
     current: current.fields,
     noop: false
   }
+}
+
+/** Linear ignores a null or empty `content` write, so a clear travels as whitespace. */
+function projectUpdateInput(pending: LinearProjectFieldEdits): LinearProjectFieldEdits {
+  if (pending.content === undefined) {
+    return pending
+  }
+  return { ...pending, content: linearProjectContentWriteValue(pending.content) }
 }
 
 /** LF-normalizes prose and drops duplicate resolved ids before comparison and mutation. */
@@ -149,7 +161,10 @@ function differingProjectFieldEdits(
   ) {
     pending.description = edits.description
   }
-  if (edits.content !== undefined && !sameLinearProjectText(edits.content, fields.content)) {
+  // Why: Linear rewrites content Markdown as it stores it, so requested text never
+  // reads back byte-identical. Comparing intent keeps a re-sent body a no-op and
+  // stops a successful write from failing its own read-back verification.
+  if (edits.content !== undefined && !sameLinearProjectContent(edits.content, fields.content)) {
     pending.content = edits.content
   }
   if (edits.statusId !== undefined && edits.statusId !== fields.status.id) {

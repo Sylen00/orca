@@ -24,7 +24,6 @@ export const BOOLEAN_FLAGS = new Set([
   'children',
   'clear-content',
   'clear-description',
-  'clear-icon',
   'clear-labels',
   'clear-lead',
   'clear-members',

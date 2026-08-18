@@ -69,6 +69,33 @@ export type LinearProjectUpdateAddResult = {
   }
 }
 
+/**
+ * Linear rejects longer values with `Argument Validation Error`, on create and on
+ * edit alike. Both caps count Unicode code points, not the UTF-16 units
+ * `String.length` returns: 255 emoji are accepted and 256 are not.
+ */
+export const LINEAR_PROJECT_NAME_CAP = 80
+export const LINEAR_PROJECT_DESCRIPTION_CAP = 255
+
+export function linearProjectTextLength(value: string): number {
+  return [...value].length
+}
+
+/** Null when the value fits; otherwise the message naming the cap and the overage. */
+export function linearProjectTextCapError(
+  value: string,
+  cap: number,
+  flag: 'name' | 'description'
+): string | null {
+  const length = linearProjectTextLength(value)
+  if (length <= cap) {
+    return null
+  }
+  const recovery =
+    flag === 'description' ? '; use --content for the long-form project overview' : ''
+  return `--${flag} must be at most ${cap} characters, but is ${length}${recovery}`
+}
+
 export const LINEAR_PROJECT_EDITABLE_FIELDS = [
   'name',
   'description',
@@ -87,10 +114,12 @@ export const LINEAR_PROJECT_EDITABLE_FIELDS = [
 export type LinearProjectEditableField = (typeof LINEAR_PROJECT_EDITABLE_FIELDS)[number]
 
 /**
- * Only the keys present were requested. `description` clears to `''`; `content`,
- * `lead`, the dates and `icon` clear to `null`; `members` and `labels` clear to
- * `[]`. `status` and `color` are non-null on `Project` and have no clear form,
- * and a team replacement may never be empty.
+ * Only the keys present were requested. `description` clears to `''`; `lead`, the
+ * dates and `icon` clear to `null`; `members` and `labels` clear to `[]`.
+ * `content` is requested as `null` but lands as `''`: Linear ignores a null or
+ * empty content write, so the host sends whitespace and the field never returns
+ * to `null` once it has been set. `status` and `color` are non-null on `Project`
+ * and have no clear form, and a team replacement may never be empty.
  */
 export type LinearProjectEditRequest = LinearProjectTargetRequest & {
   name?: string

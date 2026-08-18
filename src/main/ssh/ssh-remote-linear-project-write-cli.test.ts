@@ -394,8 +394,6 @@ describe('SSH Linear project create dispatch', () => {
       '2026-04-01',
       '--color',
       '#A1B2C3',
-      '--icon',
-      'Rocket',
       '--workspace',
       'workspace-1',
       '--json'
@@ -416,7 +414,6 @@ describe('SSH Linear project create dispatch', () => {
         startDate: '2026-03-01',
         targetDate: '2026-04-01',
         color: '#A1B2C3',
-        icon: 'Rocket',
         writeId: undefined,
         workspaceId: 'workspace-1'
       }

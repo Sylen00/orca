@@ -564,9 +564,9 @@ function formatCommandFlagHelp(flag: string, commandPath: string[]): string {
 
 function linearProjectCreateFlagHelp(flag: string): string | undefined {
   const helpByFlag: Record<string, string> = {
-    name: '--name <title>        New Linear project name',
+    name: '--name <title>        New Linear project name (max 80 characters)',
     team: '--team <key|id>       Linear team; repeat for more than one team',
-    description: '--description <text>  Short project summary',
+    description: '--description <text>  Short project summary (max 255 characters)',
     content: '--content <text>      Long Markdown project overview',
     'content-file': '--content-file <path|-> Read the project overview from a file or stdin',
     status: '--status <status>     Project status name or id (not an issue workflow state)',
@@ -577,7 +577,6 @@ function linearProjectCreateFlagHelp(flag: string): string | undefined {
     'start-date': '--start-date <date>   Project start date as YYYY-MM-DD',
     'target-date': '--target-date <date>  Project target date as YYYY-MM-DD',
     color: '--color <#RRGGBB>     Project color; quote it so the shell keeps the #',
-    icon: '--icon <icon>         Linear project icon name',
     'write-id': '--write-id <uuid-v4>  UUID v4 pinning the created project id for retries'
   }
   return helpByFlag[flag]
@@ -588,12 +587,12 @@ function linearProjectCreateFlagHelp(flag: string): string | undefined {
 function linearProjectEditFlagHelp(flag: string): string | undefined {
   const helpByFlag: Record<string, string> = {
     id: '--id <project>        Linear project UUID, slugId, URL, or unique exact name',
-    name: '--name <title>        Rename the Linear project',
-    description: '--description <text>  Replace the short project summary',
+    name: '--name <title>        Rename the Linear project (max 80 characters)',
+    description: '--description <text>  Replace the short project summary (max 255 characters)',
     'clear-description': '--clear-description   Set the project summary to empty text',
     content: '--content <text>      Replace the long Markdown project overview',
     'content-file': '--content-file <path|-> Read the replacement overview from a file or stdin',
-    'clear-content': '--clear-content       Remove the long Markdown project overview',
+    'clear-content': '--clear-content       Empty the long Markdown project overview',
     status: '--status <status>     Project status name or id (not an issue workflow state)',
     lead: '--lead me|<user>      Project lead: me, a user id, email, or exact display name',
     'clear-lead': '--clear-lead          Leave the project with no lead',
@@ -607,9 +606,7 @@ function linearProjectEditFlagHelp(flag: string): string | undefined {
     'clear-start-date': '--clear-start-date    Remove the project start date',
     'target-date': '--target-date <date>  Project target date as YYYY-MM-DD',
     'clear-target-date': '--clear-target-date   Remove the project target date',
-    color: '--color <#RRGGBB>     Project color; quote it so the shell keeps the #',
-    icon: '--icon <icon>         Linear project icon name',
-    'clear-icon': '--clear-icon          Remove the project icon'
+    color: '--color <#RRGGBB>     Project color; quote it so the shell keeps the #'
   }
   return helpByFlag[flag]
 }

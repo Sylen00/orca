@@ -162,7 +162,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
     expect(step).not.toContain('\n')
     expect(step).not.toContain('\\')
     expect(step).toContain(
-      `orca linear project create --name NAME --team=${TEAM_ID} --description DESCRIPTION --content-file - --status=${STATUS_ID} --lead=${LEAD_ID} --member=${LEAD_ID} --label=${LABEL_ID} --priority=none --start-date=2026-01-05 --target-date=2026-02-28 --color COLOR --icon ICON --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
+      `orca linear project create --name NAME --team=${TEAM_ID} --description DESCRIPTION --content-file - --status=${STATUS_ID} --lead=${LEAD_ID} --member=${LEAD_ID} --label=${LABEL_ID} --priority=none --start-date=2026-01-05 --target-date=2026-02-28 --color COLOR --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
     )
     expect(step).toContain('replacing every UPPERCASE placeholder')
   })

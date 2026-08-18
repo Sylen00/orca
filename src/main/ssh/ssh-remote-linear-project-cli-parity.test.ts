@@ -122,6 +122,11 @@ describe('linear project edit matches the local CLI', () => {
       '--member replaces the whole collection and needs at least one value; use --clear-members to empty it'
     ],
     [['launch-q3', '--name', '   '], '--name must not be blank'],
+    [['launch-q3', '--name', 'n'.repeat(81)], '--name must be at most 80 characters, but is 81'],
+    [
+      ['launch-q3', '--description', 'd'.repeat(256)],
+      '--description must be at most 255 characters, but is 256; use --content for the long-form project overview'
+    ],
     [
       ['launch-q3', '--color', 'aabbcc'],
       '--color must be #RRGGBB, quoted so the shell keeps the leading #'

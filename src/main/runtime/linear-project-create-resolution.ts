@@ -9,6 +9,7 @@ import {
   resolveProjectStatusForWrite
 } from '../linear/project-write-references'
 import type { LinearProjectCreateIntent } from './linear-project-create-intent'
+import { assertLinearProjectTextCaps } from './linear-project-text-caps'
 
 type ReadOptions = { signal?: AbortSignal }
 
@@ -24,6 +25,7 @@ export async function resolveLinearProjectCreateIntent(
   if (!name) {
     throw linearError('linear_invalid_project', 'A Linear project name is required.')
   }
+  assertLinearProjectTextCaps(name, request.description)
   const scope = await resolveProjectCreateScope(
     dedupeLinearReferenceInputs(request.teams),
     request.workspaceId,

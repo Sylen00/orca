@@ -1,5 +1,6 @@
 import type { RpcResponse } from '../runtime/rpc/core'
 import type { RpcDispatcher } from '../runtime/rpc/dispatcher'
+import { linearProjectTextCapError } from '../../shared/linear/project-agent-writes'
 import { isLinearUuid, isLinearUuidV4 } from '../../shared/linear/uuid'
 
 type ParsedRemoteCli = {
@@ -146,6 +147,18 @@ export function optionalWriteIdV4(flags: Map<string, string | boolean>): string 
     )
   }
   return writeId
+}
+
+/** Mirrors the local CLI cap so an over-long value fails the same way over SSH. */
+export function assertRemoteProjectTextCap(
+  value: string,
+  cap: number,
+  flag: 'name' | 'description'
+): void {
+  const failure = linearProjectTextCapError(value, cap, flag)
+  if (failure) {
+    throw new RemoteLinearWriteArgumentError('invalid_argument', failure)
+  }
 }
 
 export function hexColorFlag(flags: Map<string, string | boolean>, name: string): string {

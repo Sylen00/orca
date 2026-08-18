@@ -314,9 +314,11 @@ describe('Linear project field edits', () => {
       'workspace-1'
     )
 
+    // Why: every clear travels as its own null/empty form except content, which
+    // Linear ignores unless the write carries whitespace.
     expect(updateProject).toHaveBeenCalledWith('project-1', {
       description: '',
-      content: null,
+      content: ' ',
       leadId: null,
       icon: null,
       startDate: null,
@@ -455,6 +457,89 @@ describe('Linear project field edits', () => {
       editProjectFieldsForAgent('project-1', { name: 'Renamed' }, 'workspace-1')
     ).rejects.toMatchObject({ kind: 'unconfirmed' })
     expect(updateProject).toHaveBeenCalledWith('project-1', { name: 'Renamed' })
+  })
+
+  // Why: Linear rewrites content Markdown as it stores it, so a successful write
+  // never reads back byte-identical. Verifying by spelling reported these as
+  // unconfirmed and sent callers to `project show` for a write that had landed.
+  it('accepts a content read-back that Linear rewrote', async () => {
+    const url = 'https://example.com/x'
+    queueReads(projectNode(), projectNode({ content: `see [${url}](<${url}>) end` }))
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { content: `see ${url} end` },
+      'workspace-1'
+    )
+
+    expect(outcome.noop).toBe(false)
+    expect(updateProject).toHaveBeenCalledWith('project-1', { content: `see ${url} end` })
+    expect(outcome.current.content).toBe(`see [${url}](<${url}>) end`)
+  })
+
+  it('accepts a content read-back whose trailing newline Linear stripped', async () => {
+    queueReads(projectNode(), projectNode({ content: 'from a file' }))
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { content: 'from a file\n' },
+      'workspace-1'
+    )
+
+    expect(outcome.noop).toBe(false)
+    expect(outcome.current.content).toBe('from a file')
+  })
+
+  // Why: without this the same --content-file body re-mutates on every run,
+  // because the stored rewrite never equals the text on disk.
+  it('treats re-sending a body Linear already rewrote as a no-op', async () => {
+    const url = 'https://example.com/x'
+    rawRequest.mockResolvedValueOnce({
+      data: { project: projectNode({ content: `see [${url}](<${url}>) end` }) }
+    })
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { content: `see ${url} end` },
+      'workspace-1'
+    )
+
+    expect(outcome.noop).toBe(true)
+    expect(updateProject).not.toHaveBeenCalled()
+  })
+
+  // Why: Linear reports success and keeps the old body when content is written as
+  // null or '', so --clear-content used to be a flag that could only ever fail.
+  it('sends a content clear as whitespace so Linear actually applies it', async () => {
+    queueReads(projectNode(), projectNode({ content: '' }))
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent('project-1', { content: null }, 'workspace-1')
+
+    expect(updateProject).toHaveBeenCalledWith('project-1', { content: ' ' })
+    expect(outcome.noop).toBe(false)
+  })
+
+  it('treats clearing an already-empty overview as a no-op', async () => {
+    rawRequest.mockResolvedValueOnce({ data: { project: projectNode({ content: '' }) } })
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent('project-1', { content: null }, 'workspace-1')
+
+    expect(outcome.noop).toBe(true)
+    expect(updateProject).not.toHaveBeenCalled()
+  })
+
+  it('still treats a truncated content read-back as unconfirmed', async () => {
+    queueReads(projectNode(), projectNode({ content: 'the whole' }))
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    await expect(
+      editProjectFieldsForAgent('project-1', { content: 'the whole overview' }, 'workspace-1')
+    ).rejects.toMatchObject({ kind: 'unconfirmed' })
   })
 
   it('treats a collection read-back that lost an id as unconfirmed', async () => {

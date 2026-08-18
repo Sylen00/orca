@@ -154,8 +154,7 @@ describe('orca linear project edit', () => {
     ['members', '--member', 'ada'],
     ['labels', '--label', 'Launch'],
     ['start-date', '--start-date', '2026-01-01'],
-    ['target-date', '--target-date', '2026-02-01'],
-    ['icon', '--icon', 'Rocket']
+    ['target-date', '--target-date', '2026-02-01']
   ])('rejects the %s value flag alongside its clear flag', async (field, flag, value) => {
     const clearFlag = `--clear-${field}`
 
@@ -181,14 +180,13 @@ describe('orca linear project edit', () => {
     expect(firstError()).toContain('--clear-content takes no value')
   })
 
-  it('clears description to empty text and content, lead, dates and icon to null', async () => {
+  it('clears description to empty text and content, lead and dates to null', async () => {
     await runEdit([
       '--clear-description',
       '--clear-content',
       '--clear-lead',
       '--clear-start-date',
-      '--clear-target-date',
-      '--clear-icon'
+      '--clear-target-date'
     ])
 
     expect(sentRequest()).toEqual({
@@ -198,8 +196,7 @@ describe('orca linear project edit', () => {
       content: null,
       lead: null,
       startDate: null,
-      targetDate: null,
-      icon: null
+      targetDate: null
     })
   })
 
@@ -424,6 +421,37 @@ describe('orca linear project edit', () => {
 
     expect(callMock).not.toHaveBeenCalled()
     expect(firstError()).toContain('--name must not be blank')
+  })
+
+  // Why: Linear enforces both caps server-side as a generic Argument Validation
+  // Error, and on edit it arrives only after the pre-edit snapshot has paged
+  // every member, team and label connection.
+  it('rejects an over-cap --description before any RPC', async () => {
+    await main([...EDIT, 'payments-v2', '--description', 'd'.repeat(256)], '/tmp/repo')
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('--description must be at most 255 characters, but is 256')
+    expect(firstError()).toContain('--content')
+  })
+
+  it('accepts a --description at exactly the cap', async () => {
+    await runEdit(['--description', 'd'.repeat(255)])
+
+    expect(sentRequest().description).toHaveLength(255)
+  })
+
+  // Why: Linear counts code points, so 255 emoji fit even though String.length is 510.
+  it('counts --description code points, not UTF-16 units', async () => {
+    await runEdit(['--description', '\u{1F600}'.repeat(255)])
+
+    expect([...(sentRequest().description as string)]).toHaveLength(255)
+  })
+
+  it('rejects an over-cap --name before any RPC', async () => {
+    await main([...EDIT, 'payments-v2', '--name', 'n'.repeat(81)], '/tmp/repo')
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('--name must be at most 80 characters, but is 81')
   })
 
   it('maps --priority none to 0 instead of dropping it as falsy', async () => {

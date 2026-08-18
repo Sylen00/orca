@@ -1,6 +1,8 @@
 import type { RpcResponse } from '../runtime/rpc/core'
 import type { RpcDispatcher } from '../runtime/rpc/dispatcher'
 import {
+  LINEAR_PROJECT_DESCRIPTION_CAP,
+  LINEAR_PROJECT_NAME_CAP,
   LINEAR_PROJECT_UPDATE_HEALTH_CLI_VALUES,
   toLinearProjectUpdateHealth,
   type LinearProjectCreateRequest,
@@ -11,6 +13,7 @@ import { LINEAR_PROJECT_EDIT_COMMAND } from './ssh-remote-cli-command-grammar'
 import { buildRemoteLinearProjectEditRequest } from './ssh-remote-linear-project-edit-request'
 import {
   RemoteLinearWriteArgumentError,
+  assertRemoteProjectTextCap,
   calendarDateFlag,
   call,
   hexColorFlag,
@@ -60,7 +63,6 @@ const LINEAR_PROJECT_CREATE_FLAGS = new Set([
   'start-date',
   'target-date',
   'color',
-  'icon',
   'write-id'
 ])
 
@@ -113,6 +115,7 @@ function buildRemoteLinearProjectCreateRequest(
   if (!name) {
     throw new RemoteLinearWriteArgumentError('invalid_argument', '--name must not be blank')
   }
+  assertRemoteProjectTextCap(name, LINEAR_PROJECT_NAME_CAP, 'name')
   // Why: deduped like the local CLI and the edit path, so the same command sends the
   // same references over SSH and costs the host the same number of lookups.
   const teams = uniqueReferences(repeatedString(parsed.flags, 'team'))
@@ -144,10 +147,14 @@ function remoteProjectCreateText(
   stdin: string | undefined
 ): { description?: string; content?: string } {
   const content = readRemoteBody(flags, false, stdin, { value: 'content', file: 'content-file' })
+  const description = flags.has('description')
+    ? requiredStringAllowingEmpty(flags, 'description')
+    : undefined
+  if (description !== undefined) {
+    assertRemoteProjectTextCap(description, LINEAR_PROJECT_DESCRIPTION_CAP, 'description')
+  }
   return {
-    ...(flags.has('description')
-      ? { description: requiredStringAllowingEmpty(flags, 'description') }
-      : {}),
+    ...(description !== undefined ? { description } : {}),
     ...(content !== undefined ? { content } : {})
   }
 }
@@ -158,14 +165,12 @@ function remoteProjectCreateScalars(flags: Map<string, string | boolean>): {
   startDate?: string
   targetDate?: string
   color?: string
-  icon?: string
 } {
   return {
     ...(flags.has('priority') ? { priority: priorityFlag(flags, 'priority') } : {}),
     ...(flags.has('start-date') ? { startDate: calendarDateFlag(flags, 'start-date') } : {}),
     ...(flags.has('target-date') ? { targetDate: calendarDateFlag(flags, 'target-date') } : {}),
-    ...(flags.has('color') ? { color: hexColorFlag(flags, 'color') } : {}),
-    icon: optionalString(flags, 'icon')
+    ...(flags.has('color') ? { color: hexColorFlag(flags, 'color') } : {})
   }
 }
 

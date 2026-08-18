@@ -1,6 +1,10 @@
-import type { LinearProjectEditRequest } from '../shared/linear/project-agent-writes'
+import {
+  LINEAR_PROJECT_NAME_CAP,
+  type LinearProjectEditRequest
+} from '../shared/linear/project-agent-writes'
 import { getRepeatedStringFlag, getRequiredStringFlag } from './flags'
 import {
+  assertProjectTextCap,
   buildProjectTargetRequest,
   getProjectColor,
   readLinearContent,
@@ -35,9 +39,7 @@ const EDIT_FIELD_FLAGS = [
   'clear-start-date',
   'target-date',
   'clear-target-date',
-  'color',
-  'icon',
-  'clear-icon'
+  'color'
 ]
 
 /** Each clear flag with the value flags it may never accompany. */
@@ -48,8 +50,7 @@ const CLEAR_FLAG_CONFLICTS: [string, string[]][] = [
   ['clear-members', ['member']],
   ['clear-labels', ['label']],
   ['clear-start-date', ['start-date']],
-  ['clear-target-date', ['target-date']],
-  ['clear-icon', ['icon']]
+  ['clear-target-date', ['target-date']]
 ]
 
 /**
@@ -123,6 +124,7 @@ function readProjectFieldEdits(flags: Map<string, string | boolean>): LinearProj
     if (name.length === 0) {
       throw new RuntimeClientError('invalid_argument', '--name must not be blank')
     }
+    assertProjectTextCap(name, LINEAR_PROJECT_NAME_CAP, 'name')
     edits.name = name
   }
   if (flags.has('status')) {
@@ -135,7 +137,6 @@ function readProjectFieldEdits(flags: Map<string, string | boolean>): LinearProj
     edits.priority = getPriorityFlag(flags, 'priority')
   }
   edits.lead = readClearableText(flags, 'lead')
-  edits.icon = readClearableText(flags, 'icon')
   edits.startDate = readClearableDate(flags, 'start-date')
   edits.targetDate = readClearableDate(flags, 'target-date')
   return dropUnrequestedFields(edits)

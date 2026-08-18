@@ -193,7 +193,6 @@ function createRetryCommand(writeId: string, intent: LinearProjectCreateIntent):
       : []),
     // Why: a #RRGGBB literal starts a shell comment, so it is always a placeholder.
     ...(intent.color ? ['--color COLOR'] : []),
-    ...(intent.icon !== undefined ? ['--icon ICON'] : []),
     `--write-id=${commandToken(writeId, 'WRITE_ID')}`,
     `--workspace=${commandToken(intent.workspaceId, 'WORKSPACE_ID')}`,
     '--json'

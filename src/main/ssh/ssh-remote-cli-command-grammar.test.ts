@@ -45,8 +45,7 @@ describe('SSH remote command grammar', () => {
       'clear-members',
       'clear-labels',
       'clear-start-date',
-      'clear-target-date',
-      'clear-icon'
+      'clear-target-date'
     ]
     for (const flag of clearFlags) {
       expect(isRemoteBooleanFlag(flag, ['linear', 'project', 'edit'])).toBe(true)

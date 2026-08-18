@@ -54,8 +54,6 @@ describe('SSH Linear project edit dispatch', () => {
       '2026-04-01',
       '--color',
       '#A1B2C3',
-      '--icon',
-      'Rocket',
       '--workspace',
       'workspace-1',
       '--json'
@@ -79,7 +77,6 @@ describe('SSH Linear project edit dispatch', () => {
         startDate: '2026-03-01',
         targetDate: '2026-04-01',
         color: '#A1B2C3',
-        icon: 'Rocket',
         workspaceId: 'workspace-1'
       }
     })
@@ -98,8 +95,7 @@ describe('SSH Linear project edit dispatch', () => {
       '--clear-members',
       '--clear-labels',
       '--clear-start-date',
-      '--clear-target-date',
-      '--clear-icon'
+      '--clear-target-date'
     ])
 
     expect(dispatch.mock.calls[0][0].params).toEqual({
@@ -111,7 +107,6 @@ describe('SSH Linear project edit dispatch', () => {
       labels: [],
       startDate: null,
       targetDate: null,
-      icon: null,
       workspaceId: undefined
     })
   })
@@ -123,7 +118,6 @@ describe('SSH Linear project edit dispatch', () => {
       'edit',
       '--clear-lead',
       'launch-a1b2',
-      '--clear-icon',
       '--name',
       'Launch'
     ])
@@ -131,7 +125,6 @@ describe('SSH Linear project edit dispatch', () => {
     expect(dispatch.mock.calls[0][0].params).toMatchObject({
       input: 'launch-a1b2',
       lead: null,
-      icon: null,
       name: 'Launch'
     })
   })
@@ -182,8 +175,7 @@ describe('SSH Linear project edit value and clear exclusivity', () => {
     ['member', 'clear-members', ['--member', 'me']],
     ['label', 'clear-labels', ['--label', 'Growth']],
     ['start-date', 'clear-start-date', ['--start-date', '2026-03-01']],
-    ['target-date', 'clear-target-date', ['--target-date', '2026-03-01']],
-    ['icon', 'clear-icon', ['--icon', 'Rocket']]
+    ['target-date', 'clear-target-date', ['--target-date', '2026-03-01']]
   ]
 
   for (const [valueFlag, clearFlag, argv] of conflicts) {

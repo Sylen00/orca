@@ -1,4 +1,8 @@
-import type { LinearProjectEditRequest } from '../../shared/linear/project-agent-writes'
+import {
+  LINEAR_PROJECT_DESCRIPTION_CAP,
+  LINEAR_PROJECT_NAME_CAP,
+  type LinearProjectEditRequest
+} from '../../shared/linear/project-agent-writes'
 // Why: the flag grammar is the parser layer, so this command reads its clear-flag
 // names from there rather than the parser importing this module back.
 import {
@@ -7,6 +11,7 @@ import {
 } from './ssh-remote-cli-command-grammar'
 import {
   RemoteLinearWriteArgumentError,
+  assertRemoteProjectTextCap,
   calendarDateFlag,
   hexColorFlag,
   optionalString,
@@ -48,7 +53,6 @@ const LINEAR_PROJECT_EDIT_FLAGS = new Set([
   'start-date',
   'target-date',
   'color',
-  'icon',
   ...LINEAR_PROJECT_EDIT_CLEAR_FLAGS
 ])
 
@@ -91,6 +95,7 @@ function remoteProjectEditName(flags: RemoteFlags): { name?: string } {
   if (!name) {
     throw new RemoteLinearWriteArgumentError('invalid_argument', '--name must not be blank')
   }
+  assertRemoteProjectTextCap(name, LINEAR_PROJECT_NAME_CAP, 'name')
   return { name }
 }
 
@@ -104,6 +109,9 @@ function remoteProjectEditProse(
     : flags.has('description')
       ? requiredStringAllowingEmpty(flags, 'description')
       : undefined
+  if (description !== undefined) {
+    assertRemoteProjectTextCap(description, LINEAR_PROJECT_DESCRIPTION_CAP, 'description')
+  }
   const content = clearRequested(flags, 'clear-content', ['content', 'content-file'])
     ? null
     : readRemoteBody(flags, false, stdin, { value: 'content', file: 'content-file' })
@@ -169,21 +177,14 @@ function remoteProjectEditScalars(flags: RemoteFlags): {
   startDate?: string | null
   targetDate?: string | null
   color?: string
-  icon?: string | null
 } {
-  const icon = clearRequested(flags, 'clear-icon', ['icon'])
-    ? null
-    : flags.has('icon')
-      ? requiredString(flags, 'icon')
-      : undefined
   const startDate = remoteProjectEditDate(flags, 'start-date', 'clear-start-date')
   const targetDate = remoteProjectEditDate(flags, 'target-date', 'clear-target-date')
   return {
     ...(flags.has('priority') ? { priority: priorityFlag(flags, 'priority') } : {}),
     ...(startDate !== undefined ? { startDate } : {}),
     ...(targetDate !== undefined ? { targetDate } : {}),
-    ...(flags.has('color') ? { color: hexColorFlag(flags, 'color') } : {}),
-    ...(icon !== undefined ? { icon } : {})
+    ...(flags.has('color') ? { color: hexColorFlag(flags, 'color') } : {})
   }
 }
 

@@ -15,6 +15,7 @@ import {
   resolveProjectLabelsForWrite,
   resolveProjectStatusForWrite
 } from '../linear/project-write-references'
+import { assertLinearProjectTextCaps } from './linear-project-text-caps'
 
 type ReadOptions = { signal?: AbortSignal }
 
@@ -48,6 +49,7 @@ export async function resolveLinearProjectEditIntent(
   if (request.teams?.length === 0) {
     throw linearError('linear_team_required', 'A project team replacement needs at least one team.')
   }
+  assertLinearProjectTextCaps(name, request.description)
   return {
     requested,
     edits: {

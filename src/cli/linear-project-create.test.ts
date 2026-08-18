@@ -123,7 +123,6 @@ describe('orca linear project create', () => {
         startDate: undefined,
         targetDate: undefined,
         color: undefined,
-        icon: undefined,
         writeId: undefined,
         workspaceId: undefined
       },
@@ -187,8 +186,6 @@ describe('orca linear project create', () => {
         '2026-10-01',
         '--color',
         '#4EA7FC',
-        '--icon',
-        'Rocket',
         '--write-id',
         WRITE_ID_V4,
         '--workspace',
@@ -206,7 +203,6 @@ describe('orca linear project create', () => {
       startDate: '2026-07-01',
       targetDate: '2026-10-01',
       color: '#4EA7FC',
-      icon: 'Rocket',
       writeId: WRITE_ID_V4,
       workspaceId: 'workspace-1'
     })
@@ -254,6 +250,23 @@ describe('orca linear project create', () => {
 
     expect(callMock).not.toHaveBeenCalled()
     expect(firstError()).toContain('--name must not be blank')
+  })
+
+  it('rejects an over-cap --description before any RPC', async () => {
+    await main(
+      [...CREATE, '--name', 'Payments V2', '--team', 'ENG', '--description', 'd'.repeat(256)],
+      '/tmp/repo'
+    )
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('--description must be at most 255 characters, but is 256')
+  })
+
+  it('rejects an over-cap --name before any RPC', async () => {
+    await main([...CREATE, '--name', 'n'.repeat(81), '--team', 'ENG'], '/tmp/repo')
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('--name must be at most 80 characters, but is 81')
   })
 
   it('requires at least one --team', async () => {

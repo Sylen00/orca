@@ -13,7 +13,10 @@ import type {
   LinearProjectUpdateAddRequest
 } from '../shared/linear/project-agent-writes'
 import {
+  LINEAR_PROJECT_DESCRIPTION_CAP,
+  LINEAR_PROJECT_NAME_CAP,
   LINEAR_PROJECT_UPDATE_HEALTH_CLI_VALUES,
+  linearProjectTextCapError,
   toLinearProjectUpdateHealth
 } from '../shared/linear/project-agent-writes'
 import { isLinearUuidV4 } from '../shared/linear/uuid'
@@ -129,16 +132,20 @@ export async function buildProjectCreateRequest(
   if (name.length === 0) {
     throw new RuntimeClientError('invalid_argument', '--name must not be blank')
   }
+  assertProjectTextCap(name, LINEAR_PROJECT_NAME_CAP, 'name')
   const teams = uniqueReferences(getRequiredRepeatedStringFlag(flags, 'team'))
   const writeId = getProjectCreateWriteId(flags)
   const priority = flags.has('priority') ? getPriorityFlag(flags, 'priority') : undefined
   const startDate = flags.has('start-date') ? getDueDateFlag(flags, 'start-date') : undefined
   const targetDate = flags.has('target-date') ? getDueDateFlag(flags, 'target-date') : undefined
   const color = getProjectColor(flags)
+  // Why: the description has no file form, so reading and capping it here still
+  // precedes the content read that may consume a piped stdin.
+  const description = await readLinearProjectDescription(flags, cwd)
   return {
     name,
     teams,
-    description: await readLinearProjectDescription(flags, cwd),
+    description,
     content: await readLinearContent(flags, cwd),
     status: getOptionalStringFlag(flags, 'status'),
     lead: getOptionalStringFlag(flags, 'lead'),
@@ -152,7 +159,6 @@ export async function buildProjectCreateRequest(
     startDate,
     targetDate,
     color,
-    icon: getOptionalStringFlag(flags, 'icon'),
     writeId,
     workspaceId: getOptionalStringFlag(flags, 'workspace')
   }
@@ -195,7 +201,21 @@ export async function readLinearProjectDescription(
   if (typeof value !== 'string') {
     throw new RuntimeClientError('invalid_argument', '--description requires a value')
   }
-  return await readLinearProse(cwd, 'body', value)
+  const description = await readLinearProse(cwd, 'body', value)
+  assertProjectTextCap(description, LINEAR_PROJECT_DESCRIPTION_CAP, 'description')
+  return description
+}
+
+/** Linear enforces both caps server-side; failing locally keeps the error actionable. */
+export function assertProjectTextCap(
+  value: string,
+  cap: number,
+  flag: 'name' | 'description'
+): void {
+  const failure = linearProjectTextCapError(value, cap, flag)
+  if (failure) {
+    throw new RuntimeClientError('invalid_argument', failure)
+  }
 }
 
 /** Reuses the shared body reader so every prose flag shares one stdin path and cap. */
