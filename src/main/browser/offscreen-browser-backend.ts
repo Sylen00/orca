@@ -130,13 +130,17 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       return false
     }
     page.lastActivityAt = this.now()
-    const releasing = this.releasing.get(browserPageId)
-    if (!releasing && page.window && !page.window.isDestroyed()) {
-      return true
-    }
+    // Why: a wake materializes the window before it swaps the helper session
+    // and reloads the address, so the page looks resident well before it is
+    // usable. Join an in-flight wake first or a second command runs against a
+    // blank page whose session is still being torn down underneath it.
     const inFlight = this.waking.get(browserPageId)
     if (inFlight) {
       return inFlight
+    }
+    const releasing = this.releasing.get(browserPageId)
+    if (!releasing && page.window && !page.window.isDestroyed()) {
+      return true
     }
     const wake = (async (): Promise<boolean> => {
       await releasing

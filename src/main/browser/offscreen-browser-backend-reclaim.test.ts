@@ -499,6 +499,37 @@ describe('OffscreenBrowserBackend reclamation', () => {
     })
   })
 
+  it('makes a second wake wait for the first to finish rebuilding', async () => {
+    // Why: materialize sets the window before the session swap and the reload,
+    // so the page looks resident long before it is usable.
+    let releaseSwap = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    const bridge = h.bridge as unknown as { onProcessSwap: ReturnType<typeof vi.fn> }
+    bridge.onProcessSwap.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseSwap = resolve))
+    )
+    const first = h.backend.wakeTab('a')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    let secondSettled = false
+    const second = h.backend.wakeTab('a').then((value) => {
+      secondSettled = true
+      return value
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(secondSettled).toBe(false)
+
+    releaseSwap()
+    expect(await first).toBe(true)
+    expect(await second).toBe(true)
+  })
+
   it('reports false when waking a page it does not own', async () => {
     const h = createHarness()
     expect(await h.backend.wakeTab('nope')).toBe(false)
