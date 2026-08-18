@@ -6,7 +6,11 @@ import {
   readLinearContent,
   readLinearProjectDescription
 } from './linear-project-request-builders'
-import { getDueDateFlag, getPriorityFlag } from './linear-request-builders'
+import {
+  getDueDateFlag,
+  getPriorityFlag,
+  rejectAllWorkspaceForWrite
+} from './linear-request-builders'
 import { RuntimeClientError } from './runtime-client'
 
 type LinearProjectEdits = Omit<LinearProjectEditRequest, 'input' | 'workspaceId'>
@@ -57,6 +61,9 @@ export async function buildProjectEditRequest(
   flags: Map<string, string | boolean>,
   cwd: string
 ): Promise<LinearProjectEditRequest> {
+  // Why: an edit is a write, so `--workspace all` fails with the write wording every
+  // other project write uses rather than the read wording in the shared target builder.
+  rejectAllWorkspaceForWrite(flags)
   const target = buildProjectTargetRequest(flags)
   if (!EDIT_FIELD_FLAGS.some((flag) => flags.has(flag))) {
     throw new RuntimeClientError(

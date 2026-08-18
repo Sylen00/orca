@@ -3,10 +3,7 @@ import { getClients } from './client'
 import { normalizeLinearLineEndings } from './linear-text-digest'
 import {
   completeProjectWriteRecord,
-  linearProjectEntityIds,
   readProjectSnapshotNode,
-  sameLinearProjectIdSet,
-  sameLinearProjectText,
   type LinearProjectInternalSnapshot,
   type LinearProjectWriteRecord
 } from './project-field-snapshot'
@@ -84,50 +81,6 @@ export async function getProjectByIdForAgent(
     return null
   }
   return await completeProjectWriteRecord(entry, node, options.signal)
-}
-
-/**
- * A pinned id is a deduplicated success only when every REQUESTED field matches.
- * Unrequested fields are ignored because Linear may apply workspace defaults.
- */
-export function matchesLinearProjectCreateIntent(
-  input: LinearProjectCreateFields,
-  record: LinearProjectWriteRecord
-): boolean {
-  const fields = record.fields
-  return (
-    record.project.id === input.id &&
-    fields.name === input.name &&
-    sameLinearProjectIdSet(input.teamIds, linearProjectEntityIds(fields.teams)) &&
-    matchesText(input.description, fields.description) &&
-    matchesText(input.content, fields.content) &&
-    matchesValue(input.statusId, fields.status.id) &&
-    matchesValue(input.leadId, fields.lead?.id ?? null) &&
-    matchesIds(input.memberIds, fields.members) &&
-    matchesIds(input.labelIds, fields.labels) &&
-    matchesValue(input.priority, fields.priority) &&
-    matchesValue(input.startDate, fields.startDate) &&
-    matchesValue(input.targetDate, fields.targetDate) &&
-    matchesValue(input.color, fields.color) &&
-    matchesValue(input.icon, fields.icon)
-  )
-}
-
-function matchesText(requested: string | undefined, current: string | null): boolean {
-  return requested === undefined || sameLinearProjectText(requested, current)
-}
-
-function matchesValue<T>(requested: T | undefined, current: T | null): boolean {
-  return requested === undefined || requested === current
-}
-
-function matchesIds(
-  requested: string[] | undefined,
-  current: LinearProjectInternalSnapshot['members' | 'teams' | 'labels']
-): boolean {
-  return (
-    requested === undefined || sameLinearProjectIdSet(requested, linearProjectEntityIds(current))
-  )
 }
 
 function assertCreatable(input: LinearProjectCreateFields): void {

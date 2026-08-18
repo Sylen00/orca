@@ -410,6 +410,40 @@ describe('orca root help', () => {
     expect(callMock).not.toHaveBeenCalled()
   })
 
+  // Why: a bare group path (no --help) is still an incomplete command — scripts
+  // that check the exit code must see failure, not the success of a real command.
+  it('exits non-zero for a bare command-group path without --help', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    logSpy.mockClear()
+    process.exitCode = 0
+
+    await main(['linear', 'project'], '/tmp/repo')
+
+    expect(String(logSpy.mock.calls.at(-1)?.[0])).toContain('orca linear project')
+    expect(process.exitCode).toBe(1)
+    expect(callMock).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+    process.exitCode = 0
+  })
+
+  // Why: a --json caller cannot parse human-readable help text as an error
+  // response — it needs the same JSON envelope any other invalid command gets.
+  it('emits a JSON error envelope for a bare command-group path with --json', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    logSpy.mockClear()
+    process.exitCode = 0
+
+    await main(['linear', 'project', '--json'], '/tmp/repo')
+
+    const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))
+    expect(output.ok).toBe(false)
+    expect(output.error.code).toBe('invalid_argument')
+    expect(process.exitCode).toBe(1)
+    expect(callMock).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+    process.exitCode = 0
+  })
+
   it('documents the machine-readable terminal topology opt-in', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     logSpy.mockClear()

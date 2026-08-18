@@ -270,7 +270,18 @@ export async function readLinearBody(
 
 async function readLinearBodyFile(path: string, cwd: string): Promise<string> {
   if (path !== '-') {
-    return await readFile(isAbsolute(path) ? path : join(cwd, path), 'utf8')
+    // Why: over SSH, orca runs on the desktop host with ORCA_CLI_SSH_REMOTE set —
+    // a file path here would read the host's disk, not the remote's. (The WSL
+    // bridge sets the shared ORCA_CLI_CWD too, but its UNC cwd stays host-readable,
+    // so it must not trip this SSH-only guard.)
+    if (process.env.ORCA_CLI_SSH_REMOTE === '1') {
+      throw new RuntimeClientError(
+        'invalid_environment',
+        'A body file path reads from the machine running orca, not this SSH remote. Pipe the file over stdin and pass - instead.'
+      )
+    }
+    const content = await readFile(isAbsolute(path) ? path : join(cwd, path), 'utf8')
+    return rejectBlankLinearBodyFile(content, `--body-file ${path}`)
   }
   if (process.stdin.isTTY) {
     throw new RuntimeClientError('invalid_argument', 'stdin body requested but stdin is a TTY')
@@ -279,5 +290,20 @@ async function readLinearBodyFile(path: string, cwd: string): Promise<string> {
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
   }
-  return Buffer.concat(chunks).toString('utf8')
+  const content = Buffer.concat(chunks).toString('utf8')
+  return rejectBlankLinearBodyFile(content, 'stdin')
+}
+
+// Why: a body sourced from a file or pipe is almost never meant to be blank — an
+// empty/whitespace-only source is nearly always an accident (empty variable,
+// generator that produced nothing, forgotten pipe), unlike an inline --body/--content
+// value, which can deliberately be empty text.
+function rejectBlankLinearBodyFile(content: string, source: string): string {
+  if (content.trim() === '') {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      `${source} was empty or blank; refusing to write an empty body`
+    )
+  }
+  return content
 }

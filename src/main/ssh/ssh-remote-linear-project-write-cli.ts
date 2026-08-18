@@ -7,10 +7,8 @@ import {
   type LinearProjectUpdateAddRequest
 } from '../../shared/linear/project-agent-writes'
 import type { LinearProjectUpdateHealth } from '../../shared/linear/project-agent-access'
-import {
-  LINEAR_PROJECT_EDIT_COMMAND,
-  buildRemoteLinearProjectEditRequest
-} from './ssh-remote-linear-project-edit-request'
+import { LINEAR_PROJECT_EDIT_COMMAND } from './ssh-remote-cli-command-grammar'
+import { buildRemoteLinearProjectEditRequest } from './ssh-remote-linear-project-edit-request'
 import {
   RemoteLinearWriteArgumentError,
   calendarDateFlag,
@@ -107,11 +105,17 @@ function buildRemoteLinearProjectCreateRequest(
     'id'
   )
   rejectAllWorkspaceForWrite(parsed.flags)
+  // Why: same wording as the local CLI so an agent sees one message per failure, not one per transport.
+  if (!parsed.flags.has('name')) {
+    throw new RemoteLinearWriteArgumentError('invalid_argument', 'Missing required --name')
+  }
   const name = requiredString(parsed.flags, 'name').trim()
   if (!name) {
-    throw new RemoteLinearWriteArgumentError('invalid_argument', '--name must not be empty')
+    throw new RemoteLinearWriteArgumentError('invalid_argument', '--name must not be blank')
   }
-  const teams = repeatedString(parsed.flags, 'team')
+  // Why: deduped like the local CLI and the edit path, so the same command sends the
+  // same references over SSH and costs the host the same number of lookups.
+  const teams = uniqueReferences(repeatedString(parsed.flags, 'team'))
   if (teams.length === 0) {
     throw new RemoteLinearWriteArgumentError('invalid_argument', 'Missing required --team')
   }
@@ -122,8 +126,12 @@ function buildRemoteLinearProjectCreateRequest(
     ...remoteProjectCreateText(parsed.flags, stdin),
     status: optionalString(parsed.flags, 'status'),
     lead: optionalString(parsed.flags, 'lead'),
-    ...(parsed.flags.has('member') ? { members: repeatedString(parsed.flags, 'member') } : {}),
-    ...(parsed.flags.has('label') ? { labels: repeatedString(parsed.flags, 'label') } : {}),
+    ...(parsed.flags.has('member')
+      ? { members: uniqueReferences(repeatedString(parsed.flags, 'member')) }
+      : {}),
+    ...(parsed.flags.has('label')
+      ? { labels: uniqueReferences(repeatedString(parsed.flags, 'label')) }
+      : {}),
     ...remoteProjectCreateScalars(parsed.flags),
     writeId: optionalWriteIdV4(parsed.flags),
     workspaceId: optionalString(parsed.flags, 'workspace')
@@ -200,6 +208,10 @@ function buildRemoteLinearProjectUpdateAddRequest(
   }
 }
 
+function uniqueReferences(values: string[]): string[] {
+  return [...new Set(values)]
+}
+
 function remoteProjectUpdateHealth(
   flags: Map<string, string | boolean>
 ): LinearProjectUpdateHealth | undefined {
@@ -210,7 +222,7 @@ function remoteProjectUpdateHealth(
   if (!health) {
     throw new RemoteLinearWriteArgumentError(
       'invalid_argument',
-      `--health must be ${LINEAR_PROJECT_UPDATE_HEALTH_CLI_VALUES.join(', ')}`
+      `--health must be one of ${LINEAR_PROJECT_UPDATE_HEALTH_CLI_VALUES.join(', ')}`
     )
   }
   return health

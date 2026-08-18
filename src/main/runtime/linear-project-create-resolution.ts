@@ -2,6 +2,7 @@ import type { LinearProjectCreateRequest } from '../../shared/linear/project-age
 import { linearError } from '../linear/issue-context-errors'
 import { normalizeLinearLineEndings } from '../linear/linear-text-digest'
 import { resolveProjectCreateScope } from '../linear/project-create-workspace-scope'
+import { dedupeLinearReferenceInputs } from '../linear/project-reference-inputs'
 import { resolveWorkspaceUserForWrite } from '../linear/project-write-actors'
 import {
   resolveProjectLabelsForWrite,
@@ -24,7 +25,7 @@ export async function resolveLinearProjectCreateIntent(
     throw linearError('linear_invalid_project', 'A Linear project name is required.')
   }
   const scope = await resolveProjectCreateScope(
-    dedupeTeamInputs(request.teams),
+    dedupeLinearReferenceInputs(request.teams),
     request.workspaceId,
     options
   )
@@ -36,7 +37,7 @@ export async function resolveLinearProjectCreateIntent(
     ? (await resolveWorkspaceUserForWrite(request.lead, workspaceId, options)).id
     : undefined
   const memberIds = request.members?.length
-    ? await resolveMemberIds(request.members, workspaceId, options)
+    ? await resolveMemberIds(dedupeLinearReferenceInputs(request.members), workspaceId, options)
     : undefined
   const labelIds = request.labels?.length
     ? (await resolveProjectLabelsForWrite(request.labels, workspaceId, options)).map(
@@ -79,20 +80,4 @@ async function resolveMemberIds(
     }
   }
   return ids
-}
-
-// Why: the same team typed twice would otherwise cost one lookup per connected workspace.
-function dedupeTeamInputs(teams: string[]): string[] {
-  const seen = new Set<string>()
-  const unique: string[] = []
-  for (const team of teams) {
-    const trimmed = team.trim()
-    const key = trimmed.toLowerCase()
-    if (!trimmed || seen.has(key)) {
-      continue
-    }
-    seen.add(key)
-    unique.push(trimmed)
-  }
-  return unique
 }

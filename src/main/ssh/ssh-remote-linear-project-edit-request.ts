@@ -1,4 +1,10 @@
 import type { LinearProjectEditRequest } from '../../shared/linear/project-agent-writes'
+// Why: the flag grammar is the parser layer, so this command reads its clear-flag
+// names from there rather than the parser importing this module back.
+import {
+  LINEAR_PROJECT_EDIT_CLEAR_FLAGS,
+  LINEAR_PROJECT_EDIT_COMMAND
+} from './ssh-remote-cli-command-grammar'
 import {
   RemoteLinearWriteArgumentError,
   calendarDateFlag,
@@ -20,22 +26,6 @@ type ParsedRemoteCli = {
 }
 
 type RemoteFlags = Map<string, string | boolean>
-
-export const LINEAR_PROJECT_EDIT_COMMAND = ['linear', 'project', 'edit']
-
-/** No `--clear-status`, `--clear-color` or `--clear-teams`: those Linear fields cannot become empty. */
-export const LINEAR_PROJECT_EDIT_CLEAR_FLAGS = [
-  'clear-description',
-  'clear-content',
-  'clear-lead',
-  'clear-members',
-  'clear-labels',
-  'clear-start-date',
-  'clear-target-date',
-  'clear-icon'
-] as const
-
-export const LINEAR_PROJECT_EDIT_REPEATABLE_FLAGS = ['team', 'member', 'label'] as const
 
 // Why: `write-id` is absent on purpose — `ProjectUpdateInput` has no id, so edits cannot dedup.
 const LINEAR_PROJECT_EDIT_FLAGS = new Set([
@@ -86,7 +76,7 @@ export function buildRemoteLinearProjectEditRequest(
   if (Object.keys(edits).length === 0) {
     throw new RemoteLinearWriteArgumentError(
       'invalid_argument',
-      'Pass at least one field to edit or a --clear-* flag'
+      'Pass at least one field flag or --clear-* flag to edit a Linear project'
     )
   }
   // Why: references travel as user input; the host that owns the Linear token resolves them.
@@ -99,7 +89,7 @@ function remoteProjectEditName(flags: RemoteFlags): { name?: string } {
   }
   const name = requiredString(flags, 'name').trim()
   if (!name) {
-    throw new RemoteLinearWriteArgumentError('invalid_argument', '--name must not be empty')
+    throw new RemoteLinearWriteArgumentError('invalid_argument', '--name must not be blank')
   }
   return { name }
 }
@@ -148,7 +138,7 @@ function remoteProjectEditReferences(flags: RemoteFlags): {
           teams: replacementCollection(
             flags,
             'team',
-            '--team must name at least one team; Linear project teams cannot be cleared'
+            '--team replaces the whole collection and needs at least one value; a project edit cannot remove every team'
           )
         }
       : {})
@@ -169,7 +159,7 @@ function remoteProjectEditCollection(
   return replacementCollection(
     flags,
     valueFlag,
-    `--${valueFlag} must name at least one value; use --${clearFlag} to empty the collection`
+    `--${valueFlag} replaces the whole collection and needs at least one value; use --${clearFlag} to empty it`
   )
 }
 

@@ -11,6 +11,7 @@ import {
   readProjectStatusRows,
   type LinearProjectLabelRow
 } from './project-metadata-reads'
+import { dedupeLinearReferenceInputs } from './project-reference-inputs'
 import { selectLinearProjectWorkspaces } from './project-workspace-scope'
 
 const WRITE_ACTION = 'a project write'
@@ -60,7 +61,7 @@ export async function resolveProjectLabelsForWrite(
 ): Promise<LinearProjectLabelRef[]> {
   const entry = writeEntry(workspaceId)
   const resolved = new Map<string, LinearProjectLabelRow>()
-  for (const input of dedupeInputs(inputs)) {
+  for (const input of dedupeLinearReferenceInputs(inputs)) {
     const match = await resolveOneProjectLabel(entry, input, options.signal)
     resolved.set(match.id, match)
   }
@@ -112,21 +113,6 @@ function assertNoExclusiveGroupConflict(rows: LinearProjectLabelRow[]): void {
     }
     byGroup.set(row.parent.id, row)
   }
-}
-
-function dedupeInputs(inputs: string[]): string[] {
-  const seen = new Set<string>()
-  const unique: string[] = []
-  for (const input of inputs) {
-    const trimmed = input.trim()
-    const key = trimmed.toLowerCase()
-    if (!trimmed || seen.has(key)) {
-      continue
-    }
-    seen.add(key)
-    unique.push(trimmed)
-  }
-  return unique
 }
 
 function labelError(message: string, candidates: LinearProjectLabelRow[]): LinearAgentAccessError {

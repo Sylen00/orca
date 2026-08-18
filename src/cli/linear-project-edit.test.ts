@@ -288,6 +288,80 @@ describe('orca linear project edit', () => {
     expect(firstError()).toContain('stdin is a TTY')
   })
 
+  it('rejects an empty piped stdin body instead of silently wiping content', async () => {
+    const stdin = mockStdin(false, [])
+
+    try {
+      await main([...EDIT, 'payments-v2', '--content-file', '-'], '/tmp/repo')
+    } finally {
+      stdin.restore()
+    }
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('empty or blank')
+  })
+
+  it('rejects a whitespace-only piped stdin body instead of silently wiping content', async () => {
+    const stdin = mockStdin(false, ['\n', '  \t'])
+
+    try {
+      await main([...EDIT, 'payments-v2', '--content-file', '-'], '/tmp/repo')
+    } finally {
+      stdin.restore()
+    }
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('empty or blank')
+  })
+
+  // Why: over SSH, orca runs on the desktop host with ORCA_CLI_SSH_REMOTE set — a
+  // --content-file path here would read the wrong machine's disk. The WSL bridge
+  // sets the shared ORCA_CLI_CWD too, but must NOT trip this SSH-only guard.
+  it('rejects --content-file <path> when ORCA_CLI_SSH_REMOTE signals a forwarded SSH shell', async () => {
+    const previous = process.env.ORCA_CLI_SSH_REMOTE
+    process.env.ORCA_CLI_SSH_REMOTE = '1'
+
+    try {
+      await main([...EDIT, 'payments-v2', '--content-file', 'overview.md'], '/tmp/repo')
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORCA_CLI_SSH_REMOTE
+      } else {
+        process.env.ORCA_CLI_SSH_REMOTE = previous
+      }
+    }
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain('not this SSH remote')
+  })
+
+  // Why: the WSL bridge sets the same ORCA_CLI_CWD the SSH passthrough does, but its
+  // UNC cwd stays host-readable, so ORCA_CLI_CWD alone must not trip the SSH guard.
+  it('does not reject --content-file <path> from a WSL-forwarded shell', async () => {
+    const { writeFile, rm, mkdtemp } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'orca-wsl-content-'))
+    const file = join(dir, 'overview.md')
+    await writeFile(file, 'overview from a WSL-visible path', 'utf8')
+    const previous = process.env.ORCA_CLI_CWD
+    process.env.ORCA_CLI_CWD = dir
+    queueFixtures(callMock, okFixture('req_edit', editResult()))
+
+    try {
+      await main([...EDIT, 'payments-v2', '--content-file', file], '/tmp/repo')
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ORCA_CLI_CWD
+      } else {
+        process.env.ORCA_CLI_CWD = previous
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+
+    expect(sentRequest().content).toBe('overview from a WSL-visible path')
+  })
+
   it('rejects a clear conflict before consuming piped stdin', async () => {
     const stdin = mockStdin(false, ['overview from stdin'])
 
@@ -362,8 +436,11 @@ describe('orca linear project edit', () => {
     await main([...EDIT, 'payments-v2', '--name', 'P', '--workspace', 'all', '--json'], '/tmp/repo')
 
     expect(callMock).not.toHaveBeenCalled()
-    const printed = JSON.parse(firstLog()) as { error: { code: string } }
+    const printed = JSON.parse(firstLog()) as { error: { code: string; message: string } }
     expect(printed.error.code).toBe('linear_invalid_workspace')
+    // Why: an edit is a write, so it must use the write wording every other project
+    // write uses — including the SSH shim. See ssh-remote-linear-project-cli-parity.test.ts.
+    expect(printed.error.message).toBe('--workspace all is not valid for Linear writes')
   })
 
   it('requires a project target', async () => {

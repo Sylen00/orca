@@ -1,3 +1,4 @@
+import type { LinearProjectRef } from '../../shared/linear/project-agent-access'
 import {
   LINEAR_PROJECT_EDITABLE_FIELDS,
   type LinearProjectEditableField
@@ -32,6 +33,8 @@ export type LinearProjectFieldEdits = {
 }
 
 export type LinearProjectEditOutcome = {
+  /** Post-edit identity: a rename moves the project's name, slugId and url together. */
+  project: LinearProjectRef
   previous: LinearProjectInternalSnapshot
   current: LinearProjectInternalSnapshot
   /** Every requested field already held the requested value, so no mutation was issued. */
@@ -48,7 +51,7 @@ export async function editProjectFieldsForAgent(
   projectId: string,
   edits: LinearProjectFieldEdits,
   workspaceId: string,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; previous?: LinearProjectWriteRecord } = {}
 ): Promise<LinearProjectEditOutcome> {
   const requested = normalizeProjectFieldEdits(edits)
   assertEditable(requested)
@@ -57,18 +60,40 @@ export async function editProjectFieldsForAgent(
     throw new LinearWriteFailure('failed', 'Not connected to Linear')
   }
 
-  const previous = await readProjectRecord(projectId, workspaceId, options)
+  // Why: the caller reads this snapshot outside the write deadline so a slow pre-read
+  // never reports an edit that was never sent as unconfirmed. It decides what this write
+  // mutates, so a snapshot of another project would silently edit against the wrong base.
+  if (options.previous && options.previous.project.id !== projectId) {
+    throw new LinearWriteFailure('failed', 'Linear project edit snapshot is for another project')
+  }
+  const previous = options.previous ?? (await readProjectRecord(projectId, workspaceId, options))
   const pending = differingProjectFieldEdits(requested, previous.fields)
   if (!hasProjectFieldEdits(pending)) {
-    return { previous: previous.fields, current: previous.fields, noop: true }
+    return {
+      project: previous.project,
+      previous: previous.fields,
+      current: previous.fields,
+      noop: true
+    }
   }
 
-  await runLinearWrite(entry, options.signal, async (client) => {
-    const result = await client.updateProject(projectId, pending)
-    if (!result.success) {
-      throw new LinearWriteFailure('failed', 'Linear project edit failed')
+  try {
+    await runLinearWrite(entry, options.signal, async (client) => {
+      const result = await client.updateProject(projectId, pending)
+      if (!result.success) {
+        throw new LinearWriteFailure('failed', 'Linear project edit failed')
+      }
+    })
+  } catch (error) {
+    // Why: a field edit has no caller-supplied id to dedup a retry against, so
+    // treat Linear's "already exists"-shaped message as unconfirmed (read-back
+    // decides) rather than let the raw duplicate_id classification escape as an
+    // unmapped error to the RPC boundary.
+    if (error instanceof LinearWriteFailure && error.kind === 'duplicate_id') {
+      throw new LinearWriteFailure('unconfirmed', UNCONFIRMED_MESSAGE, error)
     }
-  })
+    throw error
+  }
 
   // Why: the read-back pages connections, which acquires again — it must not run inside the write slot.
   const current = await confirmLinearWrite(UNCONFIRMED_MESSAGE, () =>
@@ -77,13 +102,16 @@ export async function editProjectFieldsForAgent(
   if (hasProjectFieldEdits(differingProjectFieldEdits(requested, current.fields))) {
     throw new LinearWriteFailure('unconfirmed', UNCONFIRMED_MESSAGE)
   }
-  return { previous: previous.fields, current: current.fields, noop: false }
+  return {
+    project: current.project,
+    previous: previous.fields,
+    current: current.fields,
+    noop: false
+  }
 }
 
 /** LF-normalizes prose and drops duplicate resolved ids before comparison and mutation. */
-export function normalizeProjectFieldEdits(
-  edits: LinearProjectFieldEdits
-): LinearProjectFieldEdits {
+function normalizeProjectFieldEdits(edits: LinearProjectFieldEdits): LinearProjectFieldEdits {
   const normalized: LinearProjectFieldEdits = { ...edits }
   if (edits.name !== undefined) {
     normalized.name = normalizeLinearLineEndings(edits.name)
@@ -107,7 +135,7 @@ export function normalizeProjectFieldEdits(
 }
 
 /** The requested fields that do not already hold the requested value; collections compare as id sets. */
-export function differingProjectFieldEdits(
+function differingProjectFieldEdits(
   edits: LinearProjectFieldEdits,
   fields: LinearProjectInternalSnapshot
 ): LinearProjectFieldEdits {
@@ -157,7 +185,7 @@ export function differingProjectFieldEdits(
   if (edits.targetDate !== undefined && edits.targetDate !== fields.targetDate) {
     pending.targetDate = edits.targetDate
   }
-  if (edits.color !== undefined && edits.color !== fields.color) {
+  if (edits.color !== undefined && !sameLinearProjectColor(edits.color, fields.color)) {
     pending.color = edits.color
   }
   if (edits.icon !== undefined && edits.icon !== fields.icon) {
@@ -166,7 +194,12 @@ export function differingProjectFieldEdits(
   return pending
 }
 
-export function hasProjectFieldEdits(edits: LinearProjectFieldEdits): boolean {
+/** Linear's own hex-color casing is not guaranteed to match the request's casing. */
+function sameLinearProjectColor(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase()
+}
+
+function hasProjectFieldEdits(edits: LinearProjectFieldEdits): boolean {
   return Object.values(edits).some((value) => value !== undefined)
 }
 
@@ -215,7 +248,7 @@ const SAME_SNAPSHOT_FIELD: Record<LinearProjectEditableField, SnapshotComparison
   priority: (previous, current) => previous.priority === current.priority,
   startDate: (previous, current) => previous.startDate === current.startDate,
   targetDate: (previous, current) => previous.targetDate === current.targetDate,
-  color: (previous, current) => previous.color === current.color,
+  color: (previous, current) => sameLinearProjectColor(previous.color, current.color),
   icon: (previous, current) => previous.icon === current.icon
 }
 

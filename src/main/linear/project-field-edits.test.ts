@@ -122,6 +122,47 @@ describe('Linear project field edits', () => {
     expect(outcome.current.content).toBe('Old overview')
   })
 
+  // Why: a rename moves name, slugId and url together, so the reported identity has to
+  // come from the read-back rather than from the target the caller resolved before the edit.
+  it('reports the post-edit project identity after a rename', async () => {
+    queueReads(
+      projectNode(),
+      projectNode({
+        name: 'Importer V2',
+        slugId: 'importer-v2-abc',
+        url: 'https://linear.app/acme/project/importer-v2-abc'
+      })
+    )
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { name: 'Importer V2' },
+      'workspace-1'
+    )
+
+    expect(outcome.project).toEqual({
+      id: 'project-1',
+      name: 'Importer V2',
+      slugId: 'importer-v2-abc',
+      url: 'https://linear.app/acme/project/importer-v2-abc'
+    })
+  })
+
+  it('reports the unchanged project identity for a no-op edit', async () => {
+    rawRequest.mockResolvedValueOnce({ data: { project: projectNode() } })
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { name: 'Importer' },
+      'workspace-1'
+    )
+
+    expect(outcome.noop).toBe(true)
+    expect(outcome.project).toMatchObject({ id: 'project-1', slugId: 'importer-abc' })
+  })
+
   it('normalizes prose line endings before comparing and mutating', async () => {
     queueReads(projectNode(), projectNode({ content: 'one\ntwo' }))
     const { editProjectFieldsForAgent } = await import('./project-field-edits')
@@ -159,6 +200,87 @@ describe('Linear project field edits', () => {
     expect(outcome.noop).toBe(true)
     expect(outcome.previous).toEqual(outcome.current)
     expect(rawRequest).toHaveBeenCalledTimes(1)
+  })
+
+  // Why: Linear's stored casing for a hex color is not guaranteed to match the
+  // request's casing, so a same-color edit sent in a different case must not
+  // read as a change, and a real change confirmed by a differently-cased
+  // read-back must not be reported as unconfirmed.
+  it('compares --color case-insensitively against the stored value', async () => {
+    rawRequest.mockResolvedValueOnce({ data: { project: projectNode() } })
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { color: '#5E6AD2' },
+      'workspace-1'
+    )
+
+    expect(updateProject).not.toHaveBeenCalled()
+    expect(outcome.noop).toBe(true)
+  })
+
+  it('confirms a color edit even when the read-back casing differs from the request', async () => {
+    queueReads(projectNode({ color: '#5e6ad2' }), projectNode({ color: '#AABBCC' }))
+    updateProject.mockResolvedValueOnce({ success: true })
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { color: '#aabbcc' },
+      'workspace-1'
+    )
+
+    expect(outcome.noop).toBe(false)
+    expect(updateProject).toHaveBeenCalledTimes(1)
+  })
+
+  /** Reads one snapshot through the real record shape, then clears the queued reads. */
+  async function readSnapshot(projectId: string, node: Record<string, unknown>) {
+    rawRequest.mockResolvedValueOnce({ data: { project: node } })
+    const { getProjectByIdForAgent } = await import('./project-create')
+    const record = await getProjectByIdForAgent(projectId, 'workspace-1')
+    if (!record) {
+      throw new Error('expected a project record')
+    }
+    rawRequest.mockReset()
+    return record
+  }
+
+  // Why: the caller reads the pre-edit snapshot outside the write deadline, so supplying it
+  // has to skip the pre-read entirely rather than read the same project twice.
+  it('uses a caller-supplied snapshot instead of reading the project again', async () => {
+    const previous = await readSnapshot('project-1', projectNode())
+    rawRequest.mockResolvedValueOnce({
+      data: { project: projectNode({ description: 'New summary' }) }
+    })
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    const outcome = await editProjectFieldsForAgent(
+      'project-1',
+      { description: 'New summary' },
+      'workspace-1',
+      { previous }
+    )
+
+    expect(updateProject).toHaveBeenCalledWith('project-1', { description: 'New summary' })
+    // Why: only the post-mutation read-back remains; the pre-read never ran.
+    expect(rawRequest).toHaveBeenCalledTimes(1)
+    expect(outcome.previous.description).toBe('Old summary')
+    expect(outcome.current.description).toBe('New summary')
+  })
+
+  it('refuses a caller-supplied snapshot that belongs to another project', async () => {
+    const previous = await readSnapshot('project-2', projectNode({ id: 'project-2' }))
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    await expect(
+      editProjectFieldsForAgent('project-1', { description: 'New summary' }, 'workspace-1', {
+        previous
+      })
+    ).rejects.toMatchObject({ kind: 'failed' })
+    expect(updateProject).not.toHaveBeenCalled()
+    expect(rawRequest).not.toHaveBeenCalled()
   })
 
   it('forwards clear intents as empty string, null and empty arrays exactly', async () => {
@@ -309,6 +431,20 @@ describe('Linear project field edits', () => {
       editProjectFieldsForAgent('project-1', { name: 'Renamed' }, 'workspace-1')
     ).rejects.toMatchObject({ kind: 'failed' })
     expect(rawRequest).toHaveBeenCalledTimes(1)
+  })
+
+  // Why: a field edit has no caller-supplied id to dedup a retry against, so a
+  // Linear "already exists"-shaped message must not escape as a raw, unmapped
+  // duplicate_id failure — it has to become unconfirmed like any other write
+  // whose outcome only the read-back can settle.
+  it('treats a duplicate_id-shaped write failure as unconfirmed, not a raw escape', async () => {
+    rawRequest.mockResolvedValueOnce({ data: { project: projectNode() } })
+    updateProject.mockRejectedValueOnce(new Error('Project name already exists'))
+    const { editProjectFieldsForAgent } = await import('./project-field-edits')
+
+    await expect(
+      editProjectFieldsForAgent('project-1', { name: 'Renamed' }, 'workspace-1')
+    ).rejects.toMatchObject({ kind: 'unconfirmed' })
   })
 
   it('treats a read-back mismatch as unconfirmed', async () => {

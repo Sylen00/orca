@@ -27,7 +27,9 @@ export function parseRemoteCliArgs(argv: string[]): ParsedRemoteCli {
 
     const flag = assignment
     const next = argv[i + 1]
-    if (!isRemoteBooleanFlag(flag, commandPath) && next && !next.startsWith('--')) {
+    // Why: `--description ""` is a real empty value, so only a missing or `--`-leading
+    // next token makes the flag boolean; treating '' as absent turned it into a positional.
+    if (!isRemoteBooleanFlag(flag, commandPath) && next !== undefined && !next.startsWith('--')) {
       occurrences.push({ name: flag, value: next })
       i += 1
     } else {

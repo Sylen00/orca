@@ -219,7 +219,7 @@ describe('SSH Linear project update add argument rejection', () => {
       ])
     ).rejects.toMatchObject({
       code: 'invalid_argument',
-      message: '--health must be on-track, at-risk, off-track'
+      message: '--health must be one of on-track, at-risk, off-track'
     })
   })
 
@@ -507,6 +507,15 @@ describe('SSH Linear project create argument rejection', () => {
     })
   })
 
+  it('rejects --content-file - when the piped stdin is empty or blank', async () => {
+    await expect(dispatchProjectWrite([...base, '--content-file', '-'], '')).rejects.toMatchObject({
+      code: 'invalid_argument'
+    })
+    await expect(
+      dispatchProjectWrite([...base, '--content-file', '-'], '\n  \t')
+    ).rejects.toMatchObject({ code: 'invalid_argument' })
+  })
+
   it('rejects --content together with --content-file', async () => {
     await expect(
       dispatchProjectWrite([...base, '--content', 'x', '--content-file', '-'], 'piped')
@@ -521,7 +530,7 @@ describe('SSH Linear project create argument rejection', () => {
 
     await expect(dispatchProjectWrite([...base, '--write-id', generic])).rejects.toMatchObject({
       code: 'linear_invalid_write_id',
-      message: '--write-id must be a UUID v4'
+      message: '--write-id must be a UUID v4 for Linear project create'
     })
 
     const { dispatch } = await dispatchProjectWrite([
@@ -541,10 +550,10 @@ describe('SSH Linear project create argument rejection', () => {
   it('requires --name and at least one --team', async () => {
     await expect(
       dispatchProjectWrite(['linear', 'project', 'create', '--team', 'ENG'])
-    ).rejects.toMatchObject({ code: 'invalid_argument', message: 'Missing --name' })
+    ).rejects.toMatchObject({ code: 'invalid_argument', message: 'Missing required --name' })
     await expect(
       dispatchProjectWrite(['linear', 'project', 'create', '--name', '   ', '--team', 'ENG'])
-    ).rejects.toMatchObject({ code: 'invalid_argument', message: '--name must not be empty' })
+    ).rejects.toMatchObject({ code: 'invalid_argument', message: '--name must not be blank' })
     await expect(
       dispatchProjectWrite(['linear', 'project', 'create', '--name', 'Launch'])
     ).rejects.toMatchObject({ code: 'invalid_argument', message: 'Missing required --team' })
@@ -582,7 +591,7 @@ describe('SSH Linear project create argument rejection', () => {
       message: '--priority must be none, low, medium, high, or urgent'
     })
     await expect(dispatchProjectWrite([...base, '--color', 'A1B2C3'])).rejects.toMatchObject({
-      message: '--color must be #RRGGBB'
+      message: '--color must be #RRGGBB, quoted so the shell keeps the leading #'
     })
     await expect(
       dispatchProjectWrite([...base, '--start-date', '2026-02-30'])

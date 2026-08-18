@@ -249,23 +249,26 @@ describe('SSH Linear project edit argument rejection', () => {
   it('rejects an empty team replacement', async () => {
     await expect(dispatchEdit([...TARGET, '--team='])).rejects.toMatchObject({
       code: 'invalid_argument',
-      message: '--team must name at least one team; Linear project teams cannot be cleared'
+      message:
+        '--team replaces the whole collection and needs at least one value; a project edit cannot remove every team'
     })
   })
 
   it('rejects an empty member or label replacement and points at the clear flag', async () => {
     await expect(dispatchEdit([...TARGET, '--member='])).rejects.toMatchObject({
-      message: '--member must name at least one value; use --clear-members to empty the collection'
+      message:
+        '--member replaces the whole collection and needs at least one value; use --clear-members to empty it'
     })
     await expect(dispatchEdit([...TARGET, '--label='])).rejects.toMatchObject({
-      message: '--label must name at least one value; use --clear-labels to empty the collection'
+      message:
+        '--label replaces the whole collection and needs at least one value; use --clear-labels to empty it'
     })
   })
 
   it('rejects an edit that requests no field at all', async () => {
     await expect(dispatchEdit([...TARGET, '--json'])).rejects.toMatchObject({
       code: 'invalid_argument',
-      message: 'Pass at least one field to edit or a --clear-* flag'
+      message: 'Pass at least one field flag or --clear-* flag to edit a Linear project'
     })
   })
 
@@ -295,13 +298,13 @@ describe('SSH Linear project edit argument rejection', () => {
 
   it('rejects a blank name, bad priority, colors, and impossible calendar dates', async () => {
     await expect(dispatchEdit([...TARGET, '--name', '   '])).rejects.toMatchObject({
-      message: '--name must not be empty'
+      message: '--name must not be blank'
     })
     await expect(dispatchEdit([...TARGET, '--priority', 'p1'])).rejects.toMatchObject({
       message: '--priority must be none, low, medium, high, or urgent'
     })
     await expect(dispatchEdit([...TARGET, '--color', 'A1B2C3'])).rejects.toMatchObject({
-      message: '--color must be #RRGGBB'
+      message: '--color must be #RRGGBB, quoted so the shell keeps the leading #'
     })
     await expect(dispatchEdit([...TARGET, '--start-date', '2026-02-30'])).rejects.toMatchObject({
       message: '--start-date must be a real calendar date'

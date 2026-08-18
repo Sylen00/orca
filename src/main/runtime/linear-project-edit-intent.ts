@@ -6,6 +6,7 @@ import {
 import { linearError } from '../linear/issue-context-errors'
 import { normalizeLinearLineEndings } from '../linear/linear-text-digest'
 import type { LinearProjectFieldEdits } from '../linear/project-field-edits'
+import { dedupeLinearReferenceInputs } from '../linear/project-reference-inputs'
 import {
   resolveWorkspaceTeamsForWrite,
   resolveWorkspaceUserForWrite
@@ -77,10 +78,10 @@ async function resolveEditReferences(
       : undefined
   const leadId = await resolveLeadId(request.lead, workspaceId, options)
   const memberIds = request.members
-    ? await resolveMemberIds(dedupeReferenceInputs(request.members), workspaceId, options)
+    ? await resolveMemberIds(dedupeLinearReferenceInputs(request.members), workspaceId, options)
     : undefined
   const teamIds = request.teams
-    ? await resolveTeamIds(dedupeReferenceInputs(request.teams), workspaceId, options)
+    ? await resolveTeamIds(dedupeLinearReferenceInputs(request.teams), workspaceId, options)
     : undefined
   const labelIds = await resolveLabelIds(request.labels, workspaceId, options)
   return {
@@ -149,20 +150,4 @@ async function resolveMemberIds(
 
 function normalizeProse(value: string | null): string | null {
   return value === null ? null : normalizeLinearLineEndings(value)
-}
-
-// Why: the same reference typed twice would otherwise cost one extra workspace lookup.
-function dedupeReferenceInputs(inputs: string[]): string[] {
-  const seen = new Set<string>()
-  const unique: string[] = []
-  for (const input of inputs) {
-    const trimmed = input.trim()
-    const key = trimmed.toLowerCase()
-    if (!trimmed || seen.has(key)) {
-      continue
-    }
-    seen.add(key)
-    unique.push(trimmed)
-  }
-  return unique
 }

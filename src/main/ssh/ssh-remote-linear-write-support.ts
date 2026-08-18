@@ -91,6 +91,14 @@ export function readRemoteBody(
         `SSH Linear writes require stdin when using --${textFlags.file} -.`
       )
     }
+    // Why: a body sourced from a pipe is almost never meant to be blank — see the
+    // matching guard in the local CLI's readLinearBodyFile.
+    if (stdin.trim() === '') {
+      throw new RemoteLinearWriteArgumentError(
+        'invalid_argument',
+        `stdin for --${textFlags.file} - was empty or blank; refusing to write an empty body`
+      )
+    }
     return stdin
   }
   if (!hasValue) {
@@ -134,7 +142,7 @@ export function optionalWriteIdV4(flags: Map<string, string | boolean>): string 
   if (!isLinearUuidV4(writeId)) {
     throw new RemoteLinearWriteArgumentError(
       'linear_invalid_write_id',
-      '--write-id must be a UUID v4'
+      '--write-id must be a UUID v4 for Linear project create'
     )
   }
   return writeId
@@ -143,7 +151,10 @@ export function optionalWriteIdV4(flags: Map<string, string | boolean>): string 
 export function hexColorFlag(flags: Map<string, string | boolean>, name: string): string {
   const value = requiredString(flags, name)
   if (!/^#[0-9A-Fa-f]{6}$/.test(value)) {
-    throw new RemoteLinearWriteArgumentError('invalid_argument', `--${name} must be #RRGGBB`)
+    throw new RemoteLinearWriteArgumentError(
+      'invalid_argument',
+      `--${name} must be #RRGGBB, quoted so the shell keeps the leading #`
+    )
   }
   return value
 }
@@ -190,8 +201,6 @@ export function calendarDateFlag(flags: Map<string, string | boolean>, name: str
   }
   return value
 }
-
-export const dueDateFlag = calendarDateFlag
 
 export function repeatedString(flags: Map<string, string | boolean>, name: string): string[] {
   const value = optionalString(flags, name)

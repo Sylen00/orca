@@ -35935,10 +35935,18 @@ export class OrcaRuntimeService {
     this.assertLinearProseWithinCap(request.content ?? undefined)
     const project = await this.resolveLinearProjectForWrite(request.input, request.workspaceId)
     const intent = await this.linearProjectEditIntentForWrite(request, project.workspaceId)
+    // Why: the pre-edit snapshot is a read; inside the write deadline its timeout would
+    // report an edit that was never sent as unconfirmed.
+    const previous = await this.readLinearWriteLookup(() =>
+      getProjectByIdForAgent(project.id, project.workspaceId)
+    )
     // Why: no write id exists for a field edit, so recovery is a read-back, not a pinned retry.
     const snapshots = await this.runLinearAgentWrite(
       (signal) =>
-        editProjectFieldsForAgent(project.id, intent.edits, project.workspaceId, { signal }),
+        editProjectFieldsForAgent(project.id, intent.edits, project.workspaceId, {
+          signal,
+          ...(previous ? { previous } : {})
+        }),
       (cause) =>
         linearProjectWriteUnconfirmed({
           kind: 'edit',
@@ -35948,12 +35956,8 @@ export class OrcaRuntimeService {
         })
     )
     return buildLinearProjectEditResult({
-      project: {
-        id: project.id,
-        name: project.name,
-        slugId: project.slugId,
-        url: project.url
-      },
+      // Why: the read-back identity, not the resolved target — a rename moves name, slugId and url.
+      project: snapshots.project,
       workspaceId: project.workspaceId,
       requested: intent.requested,
       edits: intent.edits,

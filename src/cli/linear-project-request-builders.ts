@@ -93,6 +93,9 @@ export async function buildProjectUpdateAddRequest(
   flags: Map<string, string | boolean>,
   cwd: string
 ): Promise<LinearProjectUpdateAddRequest> {
+  // Why: posting an update is a write, so `--workspace all` fails with the write wording
+  // rather than the read wording in the shared target builder.
+  rejectAllWorkspaceForWrite(flags)
   const target = buildProjectTargetRequest(flags)
   const writeId = getOptionalWriteId(flags)
   const health = readProjectUpdateHealth(flags)
@@ -242,7 +245,7 @@ function uniqueReferences(values: string[]): string[] {
 }
 
 /** CRLF and lone CR become LF; no trimming and no Unicode normalization. */
-export function normalizeLinearProjectLineEndings(value: string): string {
+function normalizeLinearProjectLineEndings(value: string): string {
   return value.replace(/\r\n?/g, '\n')
 }
 

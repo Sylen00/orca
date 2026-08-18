@@ -14,6 +14,7 @@ import { reportCliError } from './format'
 import { printHelp } from './help'
 import { foldRepeatableFlags } from './repeatable-flags'
 import type { RuntimeClient } from './runtime-client'
+import { RuntimeClientError } from './runtime/types'
 import { COMMAND_SPECS } from './specs'
 
 export { COMMAND_SPECS } from './specs'
@@ -84,16 +85,32 @@ export async function main(
     printHelp(COMMAND_SPECS, [])
     return
   }
+  const json = parsed.flags.has('json')
   // Why: a bare group path names a namespace, not a command — print its help
-  // before any runtime client exists so no RPC is attempted.
+  // before any runtime client exists so no RPC is attempted. It is still an
+  // incomplete command, so the exit code matches the sibling --help-triggered
+  // branch above rather than reporting success; a --json caller gets the same
+  // JSON error envelope as any other invalid command instead of unparseable
+  // human-readable help text.
   if (
     !findCommandSpec(COMMAND_SPECS, parsed.commandPath) &&
     isCommandPathGroup(COMMAND_SPECS, parsed.commandPath)
   ) {
-    printHelp(COMMAND_SPECS, parsed.commandPath)
+    if (json) {
+      reportCliError(
+        new RuntimeClientError(
+          'invalid_argument',
+          `Pass a subcommand: ${parsed.commandPath.join(' ')} <command>`
+        ),
+        true,
+        { commandPath: parsed.commandPath }
+      )
+    } else {
+      printHelp(COMMAND_SPECS, parsed.commandPath)
+    }
+    process.exitCode = 1
     return
   }
-  const json = parsed.flags.has('json')
 
   try {
     // Why: CLI syntax and flag errors should be reported before any runtime

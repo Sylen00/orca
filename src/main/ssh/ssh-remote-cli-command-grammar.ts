@@ -3,13 +3,23 @@
  * Boolean flags decide whether the next token is a value; repeatable flags decide whether
  * multiple occurrences fold into one separator-joined value instead of last-value-wins.
  */
-import {
-  LINEAR_PROJECT_EDIT_CLEAR_FLAGS,
-  LINEAR_PROJECT_EDIT_COMMAND,
-  LINEAR_PROJECT_EDIT_REPEATABLE_FLAGS
-} from './ssh-remote-linear-project-edit-request'
-
 export type RemoteFlagOccurrence = { name: string; value: string | boolean }
+
+export const LINEAR_PROJECT_EDIT_COMMAND = ['linear', 'project', 'edit']
+
+/** No `--clear-status`, `--clear-color` or `--clear-teams`: those Linear fields cannot become empty. */
+export const LINEAR_PROJECT_EDIT_CLEAR_FLAGS = [
+  'clear-description',
+  'clear-content',
+  'clear-lead',
+  'clear-members',
+  'clear-labels',
+  'clear-start-date',
+  'clear-target-date',
+  'clear-icon'
+] as const
+
+const LINEAR_PROJECT_EDIT_REPEATABLE_FLAGS = ['team', 'member', 'label'] as const
 
 export const REPEATED_FLAG_SEPARATOR = '\u0000'
 

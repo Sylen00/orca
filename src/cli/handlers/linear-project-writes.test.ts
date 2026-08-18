@@ -324,7 +324,7 @@ describe('orca linear project update add', () => {
     }
 
     expect(callMock).not.toHaveBeenCalled()
-    expect(firstError()).toContain('Linear project update body must not be empty')
+    expect(firstError()).toContain('empty or blank')
   })
 
   it('preserves other whitespace and Unicode normalization forms verbatim', async () => {
@@ -355,8 +355,11 @@ describe('orca linear project update add', () => {
     )
 
     expect(callMock).not.toHaveBeenCalled()
-    const printed = JSON.parse(firstLog()) as { error: { code: string } }
+    const printed = JSON.parse(firstLog()) as { error: { code: string; message: string } }
     expect(printed.error.code).toBe('linear_invalid_workspace')
+    // Why: posting an update is a write, so it shares the write wording with create, edit
+    // and the SSH shim. See ssh-remote-linear-project-cli-parity.test.ts.
+    expect(printed.error.message).toBe('--workspace all is not valid for Linear writes')
   })
 
   it('rejects a malformed --write-id with linear_invalid_write_id and no RPC', async () => {
@@ -592,6 +595,8 @@ describe('orca linear project update add', () => {
 
     expect(firstLog()).toContain('Usage: orca linear project update <command> [options]')
     expect(callMock).not.toHaveBeenCalled()
-    expect(process.exitCode).toBeUndefined()
+    // Why: a bare group path is still an incomplete command — scripts that check
+    // the exit code must see failure, not the success of a real command.
+    expect(process.exitCode).toBe(1)
   })
 })

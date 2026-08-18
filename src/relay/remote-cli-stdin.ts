@@ -1,3 +1,5 @@
+const LINEAR_STDIN_FILE_FLAGS = ['--body-file', '--content-file']
+
 export function shouldReadRemoteCliStdin(argv: string[]): boolean {
   if (argv.includes('--help') || argv.includes('-h')) {
     return false
@@ -12,17 +14,33 @@ export function shouldReadRemoteCliStdin(argv: string[]): boolean {
   if (!isLinearBodyWriteCommand(commandPath)) {
     return false
   }
-  return argv.some((part, index) => {
-    if (LINEAR_STDIN_FILE_FLAGS.has(part)) {
-      return argv[index + 1] === '-'
-    }
-    return [...LINEAR_STDIN_FILE_FLAGS].some((flag) => part === `${flag}=-`)
-  })
+  return argv.some((part, index) =>
+    LINEAR_STDIN_FILE_FLAGS.includes(part)
+      ? argv[index + 1] === '-'
+      : LINEAR_STDIN_FILE_FLAGS.some((flag) => part === `${flag}=-`)
+  )
 }
 
-const LINEAR_STDIN_FILE_FLAGS = new Set(['--body-file', '--content-file'])
-
-const REMOTE_STDIN_BOOLEAN_FLAGS = new Set(['current', 'help', 'json', 'parent-current'])
+// Why: a boolean flag directly followed by a bare positional (not another
+// `--flag`) would otherwise have that positional mistaken for its value,
+// shifting the command-path scan out of alignment. Every no-value flag on the
+// Linear write commands this scan cares about has to be listed here, or a
+// piped body can silently stop being forwarded over the relay.
+const REMOTE_STDIN_BOOLEAN_FLAGS = new Set([
+  'current',
+  'help',
+  'json',
+  'parent-current',
+  'hide-diff',
+  'clear-description',
+  'clear-content',
+  'clear-lead',
+  'clear-members',
+  'clear-labels',
+  'clear-start-date',
+  'clear-target-date',
+  'clear-icon'
+])
 
 function parseRemoteCliCommandPath(argv: string[]): string[] {
   const commandPath: string[] = []
@@ -57,5 +75,9 @@ function isLinearBodyWriteCommand(commandPath: string[]): boolean {
       (commandPath[2] === 'update' && commandPath[3] === 'add')
     )
   }
-  return (commandPath[1] === 'comment' && commandPath[2] === 'add') || commandPath[1] === 'create'
+  return (
+    (commandPath[1] === 'comment' && commandPath[2] === 'add') ||
+    commandPath[1] === 'create' ||
+    commandPath[1] === 'save-issue'
+  )
 }
