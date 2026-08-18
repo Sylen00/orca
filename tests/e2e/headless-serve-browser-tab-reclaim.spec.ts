@@ -180,13 +180,32 @@ test('bounds resident renderers by the cap while tabs are still in use', async (
     const worktreeId = await resolveSeededWorktreeId(host, testRepoPath)
     const pageIds = await createTabs(host, worktreeId, pageServer.url, 5)
 
-    await expect.poll(() => countOffscreenRenderers(host), { timeout: 30_000 }).toBe(2)
+    // Why keep driving them: a page's reclaim clock also restarts when its load
+    // finally completes, and load completion does not have to follow creation
+    // order — so a single touch up front can be overtaken by a page that
+    // finished loading later. Two pages that stay in use are unambiguously the
+    // most recently used, which is exactly the case this test is about.
+    const inUsePageIds = [pageIds[0], pageIds[3]]
+    const useThenCountRenderers = async (): Promise<number> => {
+      for (const pageId of inUsePageIds) {
+        await host.client
+          .call(
+            'browser.eval',
+            { expression: 'document.title', page: pageId },
+            { timeoutMs: 60_000 }
+          )
+          .catch(() => {})
+      }
+      return countOffscreenRenderers(host)
+    }
 
-    // The most recently used pages are the ones kept resident.
+    await expect.poll(useThenCountRenderers, { timeout: 30_000 }).toBe(2)
+
+    // Every page is still open; only the two in use kept a renderer.
     const tabs = await listTabs(host, worktreeId)
     expect(tabs).toHaveLength(5)
-    const parkedIds = tabs.filter((tab) => tab.parked).map((tab) => tab.browserPageId)
-    expect(parkedIds.sort()).toEqual(pageIds.slice(0, 3).sort())
+    const residentIds = tabs.filter((tab) => !tab.parked).map((tab) => tab.browserPageId)
+    expect(residentIds.sort()).toEqual([...inUsePageIds].sort())
   } finally {
     pageServer.close()
     await host.dispose()
