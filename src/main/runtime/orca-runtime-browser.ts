@@ -675,7 +675,8 @@ export class RuntimeBrowserCommands {
    */
   private async resolveIndexedParkedAwarePageId(
     worktreeId: string | undefined,
-    index: number
+    index: number,
+    options: { wake?: boolean } = {}
   ): Promise<string | null> {
     const offscreen = this.host.getOffscreenBrowserBackend()
     if (!offscreen?.listParkedPages || this.host.getAvailableAuthoritativeWindow()) {
@@ -689,9 +690,13 @@ export class RuntimeBrowserCommands {
         `Tab index ${index} out of range (0-${tabs.length - 1})`
       )
     }
-    // Why: waking unconditionally also restarts the reclaim clock, so selecting
-    // a resident page counts as using it rather than leaving it up for eviction.
-    await offscreen.wakeTab?.(chosen.browserPageId)
+    // Why: waking also restarts the reclaim clock, so selecting a resident page
+    // counts as using it rather than leaving it up for eviction. A close opts
+    // out — rebuilding a renderer only to destroy it is pure churn, and a wake
+    // that fails would turn a reclaimable page into an unclosable one.
+    if (options.wake !== false) {
+      await offscreen.wakeTab?.(chosen.browserPageId)
+    }
     return chosen.browserPageId
   }
 
@@ -1742,7 +1747,9 @@ export class RuntimeBrowserCommands {
       // Why (STA-4341): a headless listing includes parked pages, so an index
       // must be resolved against that same listing or `tab close --index` can
       // destroy a different tab than the one the caller read.
-      tabId = await this.resolveIndexedParkedAwarePageId(worktreeId, params.index)
+      tabId = await this.resolveIndexedParkedAwarePageId(worktreeId, params.index, {
+        wake: false
+      })
       if (tabId === null) {
         const entries = [...bridge.getRegisteredTabs(worktreeId).entries()]
         if (params.index < 0 || params.index >= entries.length) {

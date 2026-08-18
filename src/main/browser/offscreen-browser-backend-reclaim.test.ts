@@ -283,6 +283,35 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.windows).toHaveLength(2)
   })
 
+  it('owns no page and no renderer when materialization fails', async () => {
+    // Why: a create that never produced a usable renderer must not occupy the
+    // retention budget, be listed as parked, or block a retry with the same id.
+    const h = createHarness()
+    h.manager.registerOffscreenGuest = () => {
+      throw new Error('register failed')
+    }
+
+    await expect(h.backend.createTab({ url: 'https://a', browserPageId: 'a' })).rejects.toThrow(
+      'register failed'
+    )
+
+    expect(h.backend.listParkedPages()).toEqual([])
+    expect(h.windows.every((win) => win.isDestroyed())).toBe(true)
+    // The id is free again, so a retry is not rejected as already existing.
+    h.manager.registerOffscreenGuest = (({
+      browserPageId,
+      webContentsId
+    }: {
+      browserPageId: string
+      webContentsId: number
+    }) => {
+      h.registered.set(browserPageId, webContentsId)
+    }) as typeof h.manager.registerOffscreenGuest
+    await expect(h.backend.createTab({ url: 'https://a', browserPageId: 'a' })).resolves.toEqual({
+      browserPageId: 'a'
+    })
+  })
+
   it('reports false when waking a page it does not own', async () => {
     const h = createHarness()
     expect(await h.backend.wakeTab('nope')).toBe(false)

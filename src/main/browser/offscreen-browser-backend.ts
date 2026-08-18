@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { BrowserWindow } from 'electron'
 import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
 import type { AgentBrowserBridge } from './agent-browser-bridge'
 import type { BrowserBackend, BrowserBackendCreateTab, ParkedBrowserPage } from './browser-backend'
@@ -72,10 +73,20 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       lastActivityAt: this.now()
     }
     this.pages.add(page)
-    // Why: register the guest and return immediately so the new tab appears
-    // without waiting for the page to finish loading. A failed load leaves the
-    // (usable) tab open, matching how a normal browser tab survives one.
-    this.materialize(page)
+    try {
+      // Why: register the guest and return immediately so the new tab appears
+      // without waiting for the page to finish loading. A failed load leaves
+      // the (usable) tab open, matching how a normal browser tab survives one.
+      this.materialize(page)
+    } catch (error) {
+      // Why: a create that never produced a usable renderer must not become an
+      // owned page. Left in place it would occupy the retention budget, be
+      // listed as parked, and make a retry with the same id fail as "already
+      // exists" — while never having installed the crash handler that would
+      // have cleaned it up.
+      this.pages.delete(browserPageId)
+      throw error
+    }
     void this.loadPage(page, url).catch((error) => {
       console.warn(
         '[offscreen-browser] page load failed:',
@@ -157,6 +168,9 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     return this.pages.parkedIdForImplicitTarget(worktreeId)
   }
 
+  // Why: quit only. The bridge's own destroyAllSessions() runs immediately
+  // before this in the shutdown chain, so routing each page through the bridge
+  // again would only re-close sessions that are already gone.
   destroyAll(): void {
     this.stopSweep()
     for (const page of this.pages.all()) {
@@ -279,6 +293,20 @@ export class OffscreenBrowserBackend implements BrowserBackend {
 
   private materialize(page: OffscreenBrowserPage): void {
     const win = createOffscreenBrowserWindow(page.partition)
+    try {
+      this.attachWindow(page, win)
+    } catch (error) {
+      // Why: the window exists before anything that can fail. Abandoning it
+      // here would leak a hidden renderer nothing owns or can reach.
+      page.window = null
+      if (!win.isDestroyed()) {
+        win.destroy()
+      }
+      throw error
+    }
+  }
+
+  private attachWindow(page: OffscreenBrowserPage, win: BrowserWindow): void {
     page.window = win
     // Why: reading win.webContents once the contents are destroyed throws, and
     // the throw would escape the 'destroyed' listener into the main process.

@@ -184,6 +184,19 @@ describe('headless parked-page targeting', () => {
     expect(fake.closedPageIds).toEqual(['parked-c'])
   })
 
+  it('closes a parked page by index without rebuilding its renderer', async () => {
+    // Why: waking a page only to destroy it is pure churn, and a wake that
+    // fails would turn a reclaimable page into an unclosable one.
+    const { RuntimeBrowserCommands } = await import('./orca-runtime-browser')
+    const fake = createFakeHeadlessHost(['live-a'], ['parked-b'])
+    const commands = new RuntimeBrowserCommands(fake.host)
+
+    await commands.browserTabClose({ index: 1, worktree: 'id:wt-1' })
+
+    expect(fake.closedPageIds).toEqual(['parked-b'])
+    expect(fake.wakeCalls).toEqual([])
+  })
+
   it('reports a listed-index overrun against the merged listing', async () => {
     const { RuntimeBrowserCommands } = await import('./orca-runtime-browser')
     const fake = createFakeHeadlessHost(['live-a'], ['parked-b'])
