@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import type { BrowserWindow } from 'electron'
 import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
 import type { AgentBrowserBridge } from './agent-browser-bridge'
 import type { BrowserBackend, BrowserBackendCreateTab, ParkedBrowserPage } from './browser-backend'
@@ -11,6 +10,10 @@ import {
   selectOffscreenBrowserPagesToPark,
   type OffscreenBrowserReclaimPolicy
 } from './offscreen-browser-page-reclaim'
+import {
+  OffscreenBrowserOpenPages,
+  type OffscreenBrowserPage
+} from './offscreen-browser-open-pages'
 import { createOffscreenBrowserWindow, loadOffscreenBrowserUrl } from './offscreen-browser-window'
 
 // Why (STA-4341): this backend is the lifecycle owner for headless browser
@@ -18,22 +21,6 @@ import { createOffscreenBrowserWindow, loadOffscreenBrowserUrl } from './offscre
 // worktree, profile) for as long as the page is open, but treats the renderer
 // process behind it as a reclaimable resource: an idle page is parked (renderer
 // destroyed, record kept) and woken on the next command that targets it.
-
-type OffscreenPage = {
-  browserPageId: string
-  worktreeId?: string
-  profileId?: string
-  partition: string
-  url: string
-  title: string
-  /** null while parked — the page exists, its renderer does not. */
-  window: BrowserWindow | null
-  /** Whether the page was its worktree's active tab when it parked. */
-  activeWhenParked: boolean
-  /** True while the initial or post-wake navigation is still in flight. */
-  loading: boolean
-  lastActivityAt: number
-}
 
 export type OffscreenBrowserBackendOptions = {
   getAgentBrowserBridge?: () => AgentBrowserBridge | null
@@ -43,7 +30,7 @@ export type OffscreenBrowserBackendOptions = {
 }
 
 export class OffscreenBrowserBackend implements BrowserBackend {
-  private readonly pages = new Map<string, OffscreenPage>()
+  private readonly pages = new OffscreenBrowserOpenPages()
   /** Renderer teardowns this backend initiated, keyed by page. Park and close
    *  both destroy the window on purpose, so the crash handler stands down for
    *  them — and a wake waits on one rather than racing it. */
@@ -71,7 +58,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       ? browserSessionRegistry.getProfile(params.profileId)
       : browserSessionRegistry.getDefaultProfile()
     const url = params.url || 'about:blank'
-    const page: OffscreenPage = {
+    const page: OffscreenBrowserPage = {
       browserPageId,
       worktreeId: params.worktreeId,
       profileId: profile?.id ?? undefined,
@@ -83,7 +70,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       loading: false,
       lastActivityAt: this.now()
     }
-    this.pages.set(browserPageId, page)
+    this.pages.add(page)
     // Why: register the guest and return immediately so the new tab appears
     // without waiting for the page to finish loading. A failed load leaves the
     // (usable) tab open, matching how a normal browser tab survives one.
@@ -99,10 +86,9 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   }
 
   async closeTab(browserPageId: string): Promise<void> {
-    const page = this.pages.get(browserPageId)
-    this.pages.delete(browserPageId)
+    const page = this.pages.delete(browserPageId) ?? null
     this.waking.delete(browserPageId)
-    await this.releaseRenderer(page ?? null, browserPageId)
+    await this.releaseRenderer(page, browserPageId)
     if (this.pages.size === 0) {
       this.stopSweep()
     }
@@ -162,47 +148,18 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   }
 
   listParkedPages(worktreeId?: string): ParkedBrowserPage[] {
-    const parked: ParkedBrowserPage[] = []
-    for (const page of this.pages.values()) {
-      if (page.window && !page.window.isDestroyed()) {
-        continue
-      }
-      if (worktreeId && page.worktreeId !== worktreeId) {
-        continue
-      }
-      parked.push({
-        browserPageId: page.browserPageId,
-        worktreeId: page.worktreeId,
-        profileId: page.profileId,
-        url: page.url,
-        title: page.title,
-        active: page.activeWhenParked
-      })
-    }
-    return parked
+    return this.pages.listParked(worktreeId)
   }
 
   /** Most-recently-used parked page in a worktree, for implicit targeting. */
   getMostRecentlyUsedParkedPageId(worktreeId?: string): string | null {
-    let best: OffscreenPage | null = null
-    for (const page of this.pages.values()) {
-      if (page.window && !page.window.isDestroyed()) {
-        continue
-      }
-      if (worktreeId && page.worktreeId !== worktreeId) {
-        continue
-      }
-      if (!best || page.lastActivityAt > best.lastActivityAt) {
-        best = page
-      }
-    }
-    return best?.browserPageId ?? null
+    return this.pages.mostRecentlyUsedParkedId(worktreeId)
   }
 
   destroyAll(): void {
     this.stopSweep()
-    for (const [pageId, page] of this.pages) {
-      this.browserManager.unregisterGuest(pageId)
+    for (const page of this.pages.all()) {
+      this.browserManager.unregisterGuest(page.browserPageId)
       if (page.window && !page.window.isDestroyed()) {
         page.window.destroy()
       }
@@ -214,9 +171,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   /** Park every page the policy no longer wants resident. Exposed for tests. */
   async reclaimIdlePages(): Promise<string[]> {
     const now = this.now()
-    const resident = [...this.pages.values()].filter(
-      (page) => page.window && !page.window.isDestroyed() && !this.releasing.has(page.browserPageId)
-    )
+    const resident = this.pages.resident().filter((page) => !this.releasing.has(page.browserPageId))
     const doomed = selectOffscreenBrowserPagesToPark(
       resident.map((page) => ({
         browserPageId: page.browserPageId,
@@ -239,9 +194,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   // agent that opens pages forever and closes none would still grow the backend
   // without limit, so the oldest parked pages are eventually closed outright.
   private async closeOverRetainedPages(): Promise<void> {
-    const parked = [...this.pages.values()].filter(
-      (page) => !page.window || page.window.isDestroyed()
-    )
+    const parked = this.pages.parked()
     const doomed = selectOffscreenBrowserPagesToClose(
       parked.map((page) => ({
         browserPageId: page.browserPageId,
@@ -286,7 +239,10 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   // Why: teardown order matters — the bridge must destroy the helper session and
   // detach its debugger while the WebContents is still alive and still mapped,
   // or the session, its CDP proxy and its listening port outlive the page.
-  private async releaseRenderer(page: OffscreenPage | null, browserPageId: string): Promise<void> {
+  private async releaseRenderer(
+    page: OffscreenBrowserPage | null,
+    browserPageId: string
+  ): Promise<void> {
     const pending = this.releasing.get(browserPageId)
     if (pending) {
       await pending
@@ -304,7 +260,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   }
 
   private async runReleaseRenderer(
-    page: OffscreenPage | null,
+    page: OffscreenBrowserPage | null,
     browserPageId: string
   ): Promise<void> {
     const bridge = this.options.getAgentBrowserBridge?.() ?? null
@@ -318,7 +274,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     }
   }
 
-  private materialize(page: OffscreenPage): void {
+  private materialize(page: OffscreenBrowserPage): void {
     const win = createOffscreenBrowserWindow(page.partition)
     page.window = win
     // Why: reading win.webContents once the contents are destroyed throws, and
@@ -355,7 +311,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     })
   }
 
-  private async loadPage(page: OffscreenPage, url: string): Promise<void> {
+  private async loadPage(page: OffscreenBrowserPage, url: string): Promise<void> {
     const win = page.window
     if (!win || win.isDestroyed()) {
       return
