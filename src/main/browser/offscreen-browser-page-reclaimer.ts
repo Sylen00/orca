@@ -1,5 +1,7 @@
-import type { OffscreenBrowserOpenPages } from './offscreen-browser-open-pages'
-import type { OffscreenBrowserPage } from './offscreen-browser-open-pages'
+import type {
+  OffscreenBrowserOpenPages,
+  OffscreenBrowserPage
+} from './offscreen-browser-open-pages'
 import {
   selectOffscreenBrowserPagesToClose,
   selectOffscreenBrowserPagesToPark,
