@@ -95,6 +95,7 @@ type Harness = {
   activePageId: string | undefined
   pagesChanged: (string | undefined)[]
   certificateFailurePageIds: Set<string>
+  downloadingPageIds: Set<string>
 }
 
 function createHarness(
@@ -103,11 +104,13 @@ function createHarness(
     activePageId?: string
     loadError?: { code: number; description: string; validatedUrl: string } | null
     certificateFailurePageIds?: string[]
+    downloadingPageIds?: string[]
   } = {}
 ): Harness {
   const state = {
     activePageId: overrides.activePageId,
     certificateFailurePageIds: new Set<string>(overrides.certificateFailurePageIds ?? []),
+    downloadingPageIds: new Set<string>(overrides.downloadingPageIds ?? []),
     pagesChanged: [] as (string | undefined)[]
   }
   const order: string[] = []
@@ -139,7 +142,9 @@ function createHarness(
     getGuestWebContentsId: (browserPageId: string) => registered.get(browserPageId) ?? null,
     getBrowserPageLoadError: () => overrides.loadError ?? null,
     getBrowserPageCertificateFailure: (browserPageId: string) =>
-      state.certificateFailurePageIds.has(browserPageId) ? { challengeId: 'c' } : null
+      state.certificateFailurePageIds.has(browserPageId) ? { challengeId: 'c' } : null,
+    hasActiveBrowserPageDownload: (browserPageId: string) =>
+      state.downloadingPageIds.has(browserPageId)
   } as unknown as BrowserManager
 
   const bridge = {
@@ -173,7 +178,8 @@ function createHarness(
     get pagesChanged(): (string | undefined)[] {
       return state.pagesChanged
     },
-    certificateFailurePageIds: state.certificateFailurePageIds
+    certificateFailurePageIds: state.certificateFailurePageIds,
+    downloadingPageIds: state.downloadingPageIds
   }
 }
 
@@ -415,6 +421,20 @@ describe('OffscreenBrowserBackend reclamation', () => {
     await h.backend.closeTab('a')
 
     expect(h.pagesChanged).toEqual(['wt-1'])
+  })
+
+  it('does not park a page that is still writing a download', async () => {
+    // Why: releasing a renderer unregisters its guest, and browser-manager
+    // cancels that page's in-flight downloads on unregister. The desktop guest
+    // budget vetoes eviction for the same reason.
+    const h = createHarness({ downloadingPageIds: ['a'] })
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.clock.value += 120_000
+
+    expect(await h.backend.reclaimIdlePages()).toEqual([])
+
+    h.downloadingPageIds.delete('a')
+    expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
   })
 
   it('does not park a page waiting on a certificate decision', async () => {

@@ -7,10 +7,9 @@ import type { BrowserManager } from './browser-manager'
 import { browserSessionRegistry } from './browser-session-registry'
 import {
   readOffscreenBrowserReclaimPolicy,
-  selectOffscreenBrowserPagesToClose,
-  selectOffscreenBrowserPagesToPark,
   type OffscreenBrowserReclaimPolicy
 } from './offscreen-browser-page-reclaim'
+import { OffscreenBrowserPageReclaimer } from './offscreen-browser-page-reclaimer'
 import {
   OffscreenBrowserOpenPages,
   type OffscreenBrowserPage
@@ -40,14 +39,22 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   private readonly releasing = new Map<string, Promise<void>>()
   private readonly waking = new Map<string, Promise<boolean>>()
   private readonly policy: OffscreenBrowserReclaimPolicy
-  private sweepTimer: NodeJS.Timeout | null = null
-  private sweepInFlight: Promise<unknown> | null = null
+  private readonly reclaimer: OffscreenBrowserPageReclaimer
 
   constructor(
     private readonly browserManager: BrowserManager,
     private readonly options: OffscreenBrowserBackendOptions = {}
   ) {
     this.policy = readOffscreenBrowserReclaimPolicy()
+    this.reclaimer = new OffscreenBrowserPageReclaimer({
+      pages: this.pages,
+      policy: this.policy,
+      isReleasing: (browserPageId) => this.releasing.has(browserPageId),
+      isPinned: (page) => this.isPagePinned(page),
+      park: (browserPageId) => this.parkPage(browserPageId),
+      close: (browserPageId) => this.closeTab(browserPageId),
+      now: () => this.now()
+    })
   }
 
   async createTab(params: BrowserBackendCreateTab): Promise<{ browserPageId: string }> {
@@ -99,7 +106,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         error instanceof Error ? error.message : String(error)
       )
     })
-    this.ensureSweepScheduled()
+    this.reclaimer.ensureScheduled()
     return { browserPageId }
   }
 
@@ -108,7 +115,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     this.waking.delete(browserPageId)
     await this.releaseRenderer(page, browserPageId)
     if (this.pages.size === 0) {
-      this.stopSweep()
+      this.reclaimer.stop()
     }
     // Why: closing a parked page has no WebContents teardown to piggyback on,
     // so nothing else tells paired clients the tab is gone — they would keep
@@ -204,7 +211,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   // before this in the shutdown chain, so routing each page through the bridge
   // again would only re-close sessions that are already gone.
   destroyAll(): void {
-    this.stopSweep()
+    this.reclaimer.stop()
     for (const page of this.pages.all()) {
       this.browserManager.unregisterGuest(page.browserPageId)
       if (page.window && !page.window.isDestroyed()) {
@@ -217,62 +224,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
 
   /** Park every page the policy no longer wants resident. Exposed for tests. */
   async reclaimIdlePages(): Promise<string[]> {
-    const resident = this.pages.resident().filter((page) => !this.releasing.has(page.browserPageId))
-    const doomed = selectOffscreenBrowserPagesToPark(
-      resident.map((page) => this.toReclaimCandidate(page)),
-      this.now(),
-      this.policy
-    )
-    const parked: string[] = []
-    for (const browserPageId of doomed) {
-      // Why: parking awaits the helper session's teardown, so a page later in
-      // this list can be woken and driven while an earlier one is still being
-      // torn down. The selection is a proposal, not a licence — re-check each
-      // page against the live state before destroying its renderer.
-      if (!this.isSafeToReclaim(browserPageId)) {
-        continue
-      }
-      await this.parkPage(browserPageId)
-      parked.push(browserPageId)
-    }
-    await this.closeOverRetainedPages()
-    return parked
-  }
-
-  // Why: parking bounds renderer processes, not the records behind them. An
-  // agent that opens pages forever and closes none would still grow the backend
-  // without limit, so the oldest parked pages are eventually closed outright.
-  private async closeOverRetainedPages(): Promise<void> {
-    const doomed = selectOffscreenBrowserPagesToClose(
-      this.pages.parked().map((page) => this.toReclaimCandidate(page)),
-      this.pages.size,
-      this.policy
-    )
-    for (const browserPageId of doomed) {
-      // Why: closing is destructive and awaits teardown, so a page selected
-      // here can be woken before its turn comes. Only close one that is still
-      // parked and still unwanted.
-      const page = this.pages.get(browserPageId)
-      if (!page || page.window || !this.isSafeToReclaim(browserPageId)) {
-        continue
-      }
-      console.warn(
-        `[offscreen-browser] closing parked page ${browserPageId}: more than ${this.policy.retainedPageLimit} pages are open`
-      )
-      await this.closeTab(browserPageId)
-    }
-  }
-
-  private toReclaimCandidate(page: OffscreenBrowserPage): {
-    browserPageId: string
-    lastActivityAt: number
-    pinned: boolean
-  } {
-    return {
-      browserPageId: page.browserPageId,
-      lastActivityAt: page.lastActivityAt,
-      pinned: this.isPagePinned(page)
-    }
+    return this.reclaimer.sweep()
   }
 
   // Why: a page is off limits while anything is depending on its renderer —
@@ -292,16 +244,12 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       // answer. Its challenge id dies with the renderer, so parking it would
       // discard both the warning and the ability to approve it.
       this.browserManager.getBrowserPageCertificateFailure(page.browserPageId) !== null ||
+      // Why: releasing a renderer unregisters its guest, and that cancels the
+      // page's in-flight downloads. The desktop guest budget vetoes eviction
+      // for the same reason (browser-guest-worktree-retention.ts).
+      this.browserManager.hasActiveBrowserPageDownload(page.browserPageId) ||
       this.options.isPagePinned?.(page.browserPageId) === true
     )
-  }
-
-  private isSafeToReclaim(browserPageId: string): boolean {
-    const page = this.pages.get(browserPageId)
-    if (!page || this.releasing.has(browserPageId)) {
-      return false
-    }
-    return !this.isPagePinned(page) && this.now() - page.lastActivityAt >= this.policy.parkGraceMs
   }
 
   private async parkPage(browserPageId: string): Promise<void> {
@@ -425,7 +373,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         .catch(() => {})
       this.browserManager.unregisterGuest(page.browserPageId)
       if (this.pages.size === 0) {
-        this.stopSweep()
+        this.reclaimer.stop()
       }
     })
     const profile = page.profileId ? browserSessionRegistry.getProfile(page.profileId) : null
@@ -455,39 +403,6 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       // create call returned, or a slow load can be parked mid-flight.
       page.lastActivityAt = this.now()
     }
-  }
-
-  private ensureSweepScheduled(): void {
-    if (this.sweepTimer) {
-      return
-    }
-    this.sweepTimer = setInterval(() => {
-      // Why: a park waits on the helper session's own bounded teardown, which
-      // can outlast the interval. Without this guard slow teardowns would stack
-      // sweeps on top of each other for as long as they lag.
-      if (this.sweepInFlight) {
-        return
-      }
-      const sweep = this.reclaimIdlePages().catch(() => {
-        // A failed park is retried on the next sweep.
-      })
-      this.sweepInFlight = sweep
-      void sweep.finally(() => {
-        if (this.sweepInFlight === sweep) {
-          this.sweepInFlight = null
-        }
-      })
-    }, this.policy.sweepIntervalMs)
-    // Why: reclamation must never be the reason the process stays alive.
-    this.sweepTimer.unref?.()
-  }
-
-  private stopSweep(): void {
-    if (this.sweepTimer) {
-      clearInterval(this.sweepTimer)
-      this.sweepTimer = null
-    }
-    this.sweepInFlight = null
   }
 
   private now(): number {

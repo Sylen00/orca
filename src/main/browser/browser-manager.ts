@@ -1472,6 +1472,19 @@ export class BrowserManager {
       : (this.loadErrorsByGuestId.get(webContentsId) ?? null)
   }
 
+  // Why (STA-4341): unregisterGuest cancels a tab's in-flight downloads, so any
+  // reclaimer that unregisters a guest has to know not to take a page that is
+  // still writing one. The desktop guest budget vetoes eviction for the same
+  // reason (browser-page-download-activity.ts).
+  hasActiveBrowserPageDownload(browserPageId: string): boolean {
+    for (const download of this.downloadsById.values()) {
+      if (download.browserTabId === browserPageId && !download.terminalEvent) {
+        return true
+      }
+    }
+    return false
+  }
+
   getBrowserPageCertificateFailure(browserPageId: string): BrowserCertificateFailure | null {
     return this.certificateTrustController?.getFailure(browserPageId) ?? null
   }
