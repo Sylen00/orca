@@ -455,31 +455,6 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
   })
 
-  it('gives up a park when the page starts a download during teardown', async () => {
-    // Why: teardown awaits the helper session while the page keeps running, and
-    // the unregister that follows would cancel a download begun in that window.
-    let releaseTeardown = (): void => {}
-    const h = createHarness()
-    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
-    const bridge = h.bridge as unknown as { onTabClosed: ReturnType<typeof vi.fn> }
-    bridge.onTabClosed.mockImplementationOnce(async () => {
-      await new Promise<void>((resolve) => (releaseTeardown = resolve))
-      // The page began downloading while its helper session was torn down.
-      h.downloadingPageIds.add('a')
-      h.downloadProgressAt = h.clock.value
-    })
-
-    h.clock.value += 120_000
-    const sweep = h.backend.reclaimIdlePages()
-    releaseTeardown()
-    await sweep
-
-    // The page kept its renderer and its registration rather than losing the write.
-    expect(h.backend.listParkedPages()).toEqual([])
-    expect(h.windows[0].isDestroyed()).toBe(false)
-    expect(h.registered.get('a')).toBe(h.windows[0].webContents.id)
-  })
-
   it('does not park a page waiting on a certificate decision', async () => {
     // Why: the challenge id dies with the renderer, so parking would discard
     // both the warning and the ability to approve it.

@@ -33,7 +33,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   /** Renderer teardowns this backend initiated, keyed by page. Park and close
    *  both destroy the window on purpose, so the crash handler stands down for
    *  them — and a wake waits on one rather than racing it. */
-  private readonly releasing = new Map<string, Promise<boolean>>()
+  private readonly releasing = new Map<string, Promise<void>>()
   private readonly waking = new Map<string, Promise<boolean>>()
   private readonly reclaimer: OffscreenBrowserPageReclaimer
 
@@ -244,17 +244,14 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       this.options
         .getAgentBrowserBridge?.()
         ?.isActiveBrowserPage(browserPageId, page.worktreeId) === true
-    // Why the abort: teardown awaits the helper session, and the page keeps
-    // running throughout. A download started inside that window would be
-    // cancelled by the unregister that follows, so give up the park instead.
-    // The session is already gone, but the next command recreates it.
-    const released = await this.releaseRenderer(page, browserPageId, () =>
-      this.reclaimer.hasAdvancingDownload(browserPageId)
-    )
-    if (!released) {
-      page.activeWhenParked = false
-      return
-    }
+    // Why no abort once this starts: the veto is re-checked immediately before
+    // this call, but teardown then awaits the helper session while the page
+    // keeps running, so a download begun inside that window is still cancelled
+    // by the unregister below — exactly as it would be if the tab were closed
+    // at that instant. Backing out mid-teardown is worse: onTabClosed has
+    // already destroyed the helper session and moved the worktree's active
+    // pointer, so an abort leaves a resident page with reset automation state.
+    await this.releaseRenderer(page, browserPageId)
     page.window = null
     if (page.activeWhenParked) {
       // Why: teardown promotes another live tab to active, which then parks
@@ -266,21 +263,19 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   // Why: teardown order matters — the bridge must destroy the helper session and
   // detach its debugger while the WebContents is still alive and still mapped,
   // or the session, its CDP proxy and its listening port outlive the page.
-  /** Resolves false when abortAfterSessionTeardown vetoed the release. */
   private async releaseRenderer(
     page: OffscreenBrowserPage | null,
-    browserPageId: string,
-    abortAfterSessionTeardown?: () => boolean
-  ): Promise<boolean> {
+    browserPageId: string
+  ): Promise<void> {
     const pending = this.releasing.get(browserPageId)
     if (pending) {
       await pending
-      return true
+      return
     }
-    const release = this.runReleaseRenderer(page, browserPageId, abortAfterSessionTeardown)
+    const release = this.runReleaseRenderer(page, browserPageId)
     this.releasing.set(browserPageId, release)
     try {
-      return await release
+      await release
     } finally {
       if (this.releasing.get(browserPageId) === release) {
         this.releasing.delete(browserPageId)
@@ -290,22 +285,17 @@ export class OffscreenBrowserBackend implements BrowserBackend {
 
   private async runReleaseRenderer(
     page: OffscreenBrowserPage | null,
-    browserPageId: string,
-    abortAfterSessionTeardown?: () => boolean
-  ): Promise<boolean> {
+    browserPageId: string
+  ): Promise<void> {
     const bridge = this.options.getAgentBrowserBridge?.() ?? null
     const webContentsId = this.browserManager.getGuestWebContentsId(browserPageId)
     if (bridge && webContentsId != null) {
       await bridge.onTabClosed(webContentsId)
     }
-    if (abortAfterSessionTeardown?.() === true) {
-      return false
-    }
     this.browserManager.unregisterGuest(browserPageId)
     if (page?.window && !page.window.isDestroyed()) {
       page.window.destroy()
     }
-    return true
   }
 
   private materialize(page: OffscreenBrowserPage): void {

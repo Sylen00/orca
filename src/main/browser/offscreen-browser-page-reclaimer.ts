@@ -130,7 +130,7 @@ export class OffscreenBrowserPageReclaimer {
   // download it is still writing. `loading` is bounded by the load helper's own
   // timeout, so it cannot hold a renderer forever; a navigation still pending
   // past that timeout is deliberately parkable, and waking retries the address.
-  isPinned(page: OffscreenBrowserPage): boolean {
+  private isPinned(page: OffscreenBrowserPage): boolean {
     return (
       page.loading ||
       this.deps.isWaking(page.browserPageId) ||
@@ -147,7 +147,7 @@ export class OffscreenBrowserPageReclaimer {
   // reason (browser-guest-worktree-retention.ts). Bounded by progress, because a
   // download that stalls forever would otherwise pin its renderer forever, and
   // one stalled download per page would defeat the resident cap outright.
-  hasAdvancingDownload(browserPageId: string): boolean {
+  private hasAdvancingDownload(browserPageId: string): boolean {
     const progressAt = this.deps.activeDownloadProgressAt(browserPageId)
     return progressAt !== null && this.deps.now() - progressAt < OFFSCREEN_BROWSER_DOWNLOAD_VETO_MS
   }
