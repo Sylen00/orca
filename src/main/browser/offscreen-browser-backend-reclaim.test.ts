@@ -430,18 +430,40 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
   })
 
-  it('does not park a renderer whose navigation is still running after the load timeout', async () => {
-    // Why: the load helper resolves on its own timeout, so `loading` stops
-    // covering a navigation that is merely slow rather than finished.
+  it('parks a page whose navigation never completes so the cap cannot be defeated', async () => {
+    // Why: a page can stay navigating forever (a server that accepts and never
+    // finishes). Pinning on that would let one stalled create per page hold a
+    // renderer indefinitely, which is the exact failure this reclaimer exists
+    // to prevent. Waking simply retries the address.
     const h = createHarness()
     await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
     h.windows[0].__loading = true
     h.clock.value += 120_000
 
-    expect(await h.backend.reclaimIdlePages()).toEqual([])
-
-    h.windows[0].__loading = false
     expect(await h.backend.reclaimIdlePages()).toEqual(['a'])
+    expect(h.backend.listParkedPages()[0]?.url).toBe('https://a')
+  })
+
+  it('abandons a wake whose page was closed and replaced underneath it', async () => {
+    // Why: reporting success then would hand the original command a different
+    // page under the name it asked for.
+    let releaseSwap = (): void => {}
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://a', browserPageId: 'a' })
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+
+    const bridge = h.bridge as unknown as { onProcessSwap: ReturnType<typeof vi.fn> }
+    bridge.onProcessSwap.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => (releaseSwap = resolve))
+    )
+    const wake = h.backend.wakeTab('a')
+    await Promise.resolve()
+    await h.backend.closeTab('a')
+    await h.backend.createTab({ url: 'https://replacement', browserPageId: 'a' })
+    releaseSwap()
+
+    expect(await wake).toBe(false)
   })
 
   it('ignores a subframe in-page navigation when recording the address', async () => {

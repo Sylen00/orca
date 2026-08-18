@@ -142,9 +142,13 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     if (!releasing && page.window && !page.window.isDestroyed()) {
       return true
     }
+    const stillOwned = (): boolean => this.pages.get(browserPageId) === page
     const wake = (async (): Promise<boolean> => {
       await releasing
-      if (!this.pages.has(browserPageId)) {
+      // Why: identity, not presence — a close during the wake can be followed
+      // by a create reusing the id, and reporting success then would hand the
+      // original command a different page under the name it asked for.
+      if (!stillOwned()) {
         return false
       }
       if (page.window && !page.window.isDestroyed()) {
@@ -160,10 +164,16 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         // path so the stale helper session and CDP proxy are torn down.
         await bridge.onProcessSwap(browserPageId, webContentsId, previousWebContentsId ?? undefined)
       }
+      if (!stillOwned()) {
+        return false
+      }
       await this.loadPage(page, page.url).catch(() => {
         // A parked page whose URL no longer loads stays open and reports the
         // failure through the same load-error surface as a live page.
       })
+      if (!stillOwned()) {
+        return false
+      }
       page.lastActivityAt = this.now()
       return true
     })()
@@ -264,9 +274,13 @@ export class OffscreenBrowserBackend implements BrowserBackend {
   // committing, or a wake still rebuilding it. The wake case matters because a
   // wake is resident but not yet loading while it awaits the process swap.
   private isPagePinned(page: OffscreenBrowserPage): boolean {
+    // Why: `loading` is bounded by the load helper's own timeout, so it cannot
+    // be used to hold a renderer forever. A navigation still pending past that
+    // timeout is deliberately parkable — pinning it would let one stalled page
+    // per create defeat the resident cap outright, and waking simply retries
+    // the address.
     return (
       page.loading ||
-      this.isNavigating(page) ||
       this.waking.has(page.browserPageId) ||
       // Why: a page blocked on a certificate decision is work waiting on an
       // answer. Its challenge id dies with the renderer, so parking it would
@@ -274,20 +288,6 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       this.browserManager.getBrowserPageCertificateFailure(page.browserPageId) !== null ||
       this.options.isPagePinned?.(page.browserPageId) === true
     )
-  }
-
-  // Why: the load helper resolves on its own timeout, so `loading` stops
-  // covering a navigation that is slow rather than finished. Ask the renderer.
-  private isNavigating(page: OffscreenBrowserPage): boolean {
-    const win = page.window
-    if (!win || win.isDestroyed()) {
-      return false
-    }
-    try {
-      return win.webContents.isLoading()
-    } catch {
-      return false
-    }
   }
 
   private isSafeToReclaim(browserPageId: string): boolean {
