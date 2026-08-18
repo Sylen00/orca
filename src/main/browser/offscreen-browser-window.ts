@@ -11,6 +11,15 @@ import { ORCA_BROWSER_GUEST_WEB_PREFERENCES } from '../../shared/browser-guest-w
 const DEFAULT_VIEWPORT_WIDTH = 1280
 const DEFAULT_VIEWPORT_HEIGHT = 800
 const LOAD_TIMEOUT_MS = 30_000
+/**
+ * How long a wake waits for the reloaded page before returning anyway. A wake
+ * happens inside an RPC a paired client gives 15s (`browser.tabShow` in
+ * remote-browser-page-session.ts), so waiting out the full load budget would
+ * report the browser unreachable on any page slower than that. The page is
+ * operable and still navigating when this elapses — the same contract a freshly
+ * created tab has, since createTab never waits for its load either.
+ */
+export const OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS = 10_000
 
 export function createOffscreenBrowserWindow(partition: string): BrowserWindow {
   return new BrowserWindow({
@@ -29,7 +38,11 @@ export function createOffscreenBrowserWindow(partition: string): BrowserWindow {
   })
 }
 
-export async function loadOffscreenBrowserUrl(win: BrowserWindow, url: string): Promise<void> {
+export async function loadOffscreenBrowserUrl(
+  win: BrowserWindow,
+  url: string,
+  timeoutMs: number = LOAD_TIMEOUT_MS
+): Promise<void> {
   const wc = win.webContents
   await new Promise<void>((resolve, reject) => {
     let settled = false
@@ -42,7 +55,7 @@ export async function loadOffscreenBrowserUrl(win: BrowserWindow, url: string): 
       // Why: about:blank and slow pages can resolve via timeout without a
       // did-finish-load; treat that as success so the tab is still operable.
       resolve()
-    }, LOAD_TIMEOUT_MS)
+    }, timeoutMs)
 
     const onFinish = (): void => {
       if (settled) {

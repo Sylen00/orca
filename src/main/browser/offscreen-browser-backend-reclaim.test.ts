@@ -3,12 +3,18 @@ import type { BrowserWindow } from 'electron'
 import type { AgentBrowserBridge } from './agent-browser-bridge'
 import type { BrowserManager } from './browser-manager'
 
+const OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS = 10_000
+
 const createOffscreenBrowserWindow = vi.fn<(partition: string) => unknown>()
-const loadOffscreenBrowserUrl = vi.fn<(win: unknown, url: string) => Promise<void>>(async () => {})
+const loadOffscreenBrowserUrl = vi.fn<
+  (win: unknown, url: string, timeoutMs?: number) => Promise<void>
+>(async () => {})
 
 vi.mock('./offscreen-browser-window', () => ({
   createOffscreenBrowserWindow: (partition: string) => createOffscreenBrowserWindow(partition),
-  loadOffscreenBrowserUrl: (win: unknown, url: string) => loadOffscreenBrowserUrl(win, url)
+  loadOffscreenBrowserUrl: (win: unknown, url: string, timeoutMs?: number) =>
+    loadOffscreenBrowserUrl(win, url, timeoutMs),
+  OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS: 10_000
 }))
 
 vi.mock('./browser-session-registry', () => ({
@@ -265,7 +271,11 @@ describe('OffscreenBrowserBackend reclamation', () => {
     expect(h.windows).toHaveLength(2)
     expect(h.registered.get(pageId)).toBe(wokenId)
     expect(h.order).toEqual([`register:${pageId}:${wokenId}`, `process-swap:${pageId}:${wokenId}`])
-    expect(loadOffscreenBrowserUrl).toHaveBeenCalledWith(h.windows[1], 'https://example.test/moved')
+    expect(loadOffscreenBrowserUrl).toHaveBeenCalledWith(
+      h.windows[1],
+      'https://example.test/moved',
+      OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS
+    )
     expect(h.backend.listParkedPages()).toEqual([])
   })
 
@@ -456,6 +466,27 @@ describe('OffscreenBrowserBackend reclamation', () => {
     await h.backend.reclaimIdlePages()
 
     expect(h.backend.listParkedPages()[0]?.url).toBe('https://host.test/')
+  })
+
+  it('does not let a wake outlast the RPC budget a paired client gives it', async () => {
+    // Why: a wake happens inside browser.tabShow, which the paired client caps
+    // at 15s. Waiting out the full 30s load budget would report the browser
+    // unreachable on any page slower than that; the page is operable and still
+    // navigating when the wake returns, exactly as a freshly created tab is.
+    const h = createHarness()
+    await h.backend.createTab({ url: 'https://example.test/a', browserPageId: 'a' })
+    const createTimeout = loadOffscreenBrowserUrl.mock.calls.at(-1)?.[2]
+    h.clock.value += 120_000
+    await h.backend.reclaimIdlePages()
+    loadOffscreenBrowserUrl.mockClear()
+
+    await h.backend.wakeTab('a')
+
+    const wakeTimeout = loadOffscreenBrowserUrl.mock.calls.at(-1)?.[2]
+    expect(wakeTimeout).toBe(OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS)
+    expect(OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS).toBeLessThan(15_000)
+    // A fresh create keeps the longer budget; nothing is waiting on it.
+    expect(createTimeout).toBeUndefined()
   })
 
   it('coalesces concurrent wakes into one renderer', async () => {

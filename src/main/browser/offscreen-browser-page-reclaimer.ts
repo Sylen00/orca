@@ -29,7 +29,6 @@ export type OffscreenBrowserReclaimerDeps = {
   /** A client streaming the page, or a command in flight against it. */
   isHostPinned: (browserPageId: string) => boolean
   park: (browserPageId: string) => Promise<void>
-  close: (browserPageId: string) => Promise<void>
   now: () => number
 }
 

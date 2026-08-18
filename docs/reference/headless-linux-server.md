@@ -285,7 +285,9 @@ agent to tidy up.
 An open page whose renderer has been reclaimed is **parked**: the page keeps
 its id, address, worktree and profile, `orca tab list` still shows it (marked
 `(parked)`, and `parked: true` under `--json`), and the next command that
-targets it transparently rebuilds the renderer and reloads the address. What a
+targets it transparently rebuilds the renderer and reloads the address. Waking is bounded: it waits briefly for the
+reload and then returns with the page operable and still navigating, so a slow
+site cannot stall the request that woke it. What a
 park does _not_ preserve is in-page JavaScript state — cookies and local
 storage live in the profile partition and survive, but an unsubmitted form or
 an SPA's in-memory state does not. A page is never parked while a paired

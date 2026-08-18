@@ -11,7 +11,11 @@ import {
   OffscreenBrowserOpenPages,
   type OffscreenBrowserPage
 } from './offscreen-browser-open-pages'
-import { createOffscreenBrowserWindow, loadOffscreenBrowserUrl } from './offscreen-browser-window'
+import {
+  createOffscreenBrowserWindow,
+  loadOffscreenBrowserUrl,
+  OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS
+} from './offscreen-browser-window'
 
 // Why (STA-4341): this backend is the lifecycle owner for headless browser
 // pages. It keeps the page identity an agent holds (`browserPageId`, URL,
@@ -52,7 +56,6 @@ export class OffscreenBrowserBackend implements BrowserBackend {
         this.browserManager.hasActiveBrowserPageDownload(browserPageId),
       isHostPinned: (browserPageId) => this.options.isPagePinned?.(browserPageId) === true,
       park: (browserPageId) => this.parkPage(browserPageId),
-      close: (browserPageId) => this.closeTab(browserPageId),
       now: () => this.now()
     })
   }
@@ -174,7 +177,7 @@ export class OffscreenBrowserBackend implements BrowserBackend {
       if (!stillOwned()) {
         return false
       }
-      await this.loadPage(page, page.url).catch(() => {
+      await this.loadPage(page, page.url, OFFSCREEN_BROWSER_WAKE_LOAD_BUDGET_MS).catch(() => {
         // A parked page whose URL no longer loads stays open and reports the
         // failure through the same load-error surface as a live page.
       })
@@ -368,14 +371,18 @@ export class OffscreenBrowserBackend implements BrowserBackend {
     })
   }
 
-  private async loadPage(page: OffscreenBrowserPage, url: string): Promise<void> {
+  private async loadPage(
+    page: OffscreenBrowserPage,
+    url: string,
+    timeoutMs?: number
+  ): Promise<void> {
     const win = page.window
     if (!win || win.isDestroyed()) {
       return
     }
     page.loading = true
     try {
-      await loadOffscreenBrowserUrl(win, url)
+      await loadOffscreenBrowserUrl(win, url, timeoutMs)
     } finally {
       page.loading = false
     }
