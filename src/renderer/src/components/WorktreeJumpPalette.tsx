@@ -527,7 +527,7 @@ function PaletteOpenTabPrimaryLine({
             'Last active {{value0}} ago',
             { value0: sessionAge }
           )}
-          className="inline-flex h-5 shrink-0 items-center self-center text-[11px] font-medium leading-none tabular-nums text-muted-foreground/70"
+          className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground/70"
         >
           {sessionAge}
         </span>
@@ -3234,6 +3234,10 @@ function WorktreeJumpPaletteContent({
                   ? (sshConnectionStates.get(sshConnectionId)?.status ?? 'disconnected')
                   : null
                 const isSshDisconnected = sshStatus != null && sshStatus !== 'connected'
+                const sessionAge = formatPaletteSessionAge(
+                  worktree.lastActivityAt,
+                  paletteNowMs
+                )
                 return (
                   <CommandItem
                     key={renderKey}
@@ -3281,6 +3285,18 @@ function WorktreeJumpPaletteContent({
                               slot="palette-worktree-name"
                               className="truncate text-[14px] font-semibold text-foreground"
                             />
+                            {sessionAge ? (
+                              <span
+                                aria-label={translate(
+                                  'auto.components.WorktreeJumpPalette.lastActiveTime',
+                                  'Last active {{value0}} ago',
+                                  { value0: sessionAge }
+                                )}
+                                className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground/70"
+                              >
+                                {sessionAge}
+                              </span>
+                            ) : null}
                             {isCurrentWorktree && (
                               <span className="shrink-0 self-center rounded-[6px] border border-border/60 bg-background/45 px-1.5 py-px text-[9px] font-medium leading-normal text-muted-foreground/88">
                                 {translate(
@@ -3530,6 +3546,7 @@ function WorktreeJumpPaletteContent({
                   ? resolveRepoForWorktree(simulatorWorktree)
                   : undefined
                 const simulatorRepoName = simulatorRepo?.displayName ?? result.repoName
+                const sessionAge = formatPaletteSessionAge(result.lastActiveAt ?? null, paletteNowMs)
 
                 return (
                   <CommandItem
@@ -3549,6 +3566,7 @@ function WorktreeJumpPaletteContent({
                             titleRanges={result.titleRanges}
                             secondaryText={result.secondaryText}
                             secondaryRanges={result.secondaryRanges}
+                            sessionAge={sessionAge}
                             leadingBadges={
                               <>
                                 {result.isCurrentTab && (
@@ -3606,6 +3624,7 @@ function WorktreeJumpPaletteContent({
                 ? resolveRepoForWorktree(browserWorktree)
                 : undefined
               const browserRepoName = browserRepo?.displayName ?? result.repoName
+              const sessionAge = formatPaletteSessionAge(result.lastActiveAt ?? null, paletteNowMs)
 
               return (
                 <CommandItem
@@ -3625,6 +3644,7 @@ function WorktreeJumpPaletteContent({
                           titleRanges={result.titleRanges}
                           secondaryText={result.secondaryText}
                           secondaryRanges={result.secondaryRanges}
+                          sessionAge={sessionAge}
                           leadingBadges={
                             <>
                               {result.isCurrentPage && (
