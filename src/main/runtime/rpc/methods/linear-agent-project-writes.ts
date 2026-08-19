@@ -38,18 +38,33 @@ const LinearProjectReference = z.string().refine((value) => value.trim().length 
   message: 'Reference values cannot be blank'
 })
 
+// Why: each reference costs one sequential Linear round-trip on a shared limiter, so an
+// oversized array pins Linear access for every caller. Sized to the 30s resolution
+// deadline: three reference fields at ~200ms per round-trip leaves room for ~50 each,
+// and anything past that would only fail closed on the deadline instead of writing.
+// Resolving them concurrently over the limiter's four permits would lift this.
+const LINEAR_PROJECT_REFERENCE_CAP = 50
+function referenceList(field: string) {
+  return z
+    .array(LinearProjectReference)
+    .max(
+      LINEAR_PROJECT_REFERENCE_CAP,
+      `${field} accepts at most ${LINEAR_PROJECT_REFERENCE_CAP} values`
+    )
+}
+
 const LinearProjectCreate = z.object({
   name: requiredString('Missing project name').refine((value) => value.trim().length > 0, {
     message: 'Missing project name'
   }),
-  teams: z.array(LinearProjectReference).min(1, 'At least one team is required'),
+  teams: referenceList('teams').min(1, 'At least one team is required'),
   // Why: OptionalString coerces '' to undefined, and empty prose is a meaningful create value.
   description: OptionalPlainString,
   content: OptionalPlainString,
   status: OptionalString,
   lead: OptionalString,
-  members: z.array(LinearProjectReference).optional(),
-  labels: z.array(LinearProjectReference).optional(),
+  members: referenceList('members').optional(),
+  labels: referenceList('labels').optional(),
   // Why: 0 is `none`, a real requested priority, so the bounds must include it.
   priority: z.number().int().min(0).max(4).optional(),
   startDate: OptionalString.refine(isOptionalCalendarDate, {
@@ -61,7 +76,6 @@ const LinearProjectCreate = z.object({
   color: OptionalString.refine((value) => value === undefined || /^#[0-9A-Fa-f]{6}$/.test(value), {
     message: '--color must be #RRGGBB'
   }),
-  icon: OptionalString,
   writeId: OptionalString,
   workspaceId: LinearProjectWriteWorkspace
 })
@@ -87,10 +101,10 @@ const LinearProjectEdit = z
     content: NullableString,
     status: OptionalString,
     lead: NullableString,
-    members: z.array(LinearProjectReference).optional(),
+    members: referenceList('members').optional(),
     // Why: members and labels clear with [], but a team replacement must keep at least one team.
-    teams: z.array(LinearProjectReference).min(1, 'At least one team is required').optional(),
-    labels: z.array(LinearProjectReference).optional(),
+    teams: referenceList('teams').min(1, 'At least one team is required').optional(),
+    labels: referenceList('labels').optional(),
     priority: z.number().int().min(0).max(4).optional(),
     startDate: nullableCalendarDate('start-date'),
     targetDate: nullableCalendarDate('target-date'),
@@ -99,8 +113,7 @@ const LinearProjectEdit = z
       {
         message: '--color must be #RRGGBB'
       }
-    ),
-    icon: NullableString
+    )
   })
   .refine((params) => LINEAR_PROJECT_EDITABLE_FIELDS.some((field) => params[field] !== undefined), {
     message: 'At least one field to edit is required'
@@ -110,11 +123,18 @@ function isOptionalCalendarDate(value: string | undefined): boolean {
   if (value === undefined) {
     return true
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) {
     return false
   }
-  // Why: the regex accepts 2026-02-31; only a round-trip proves a real calendar date.
-  return new Date(`${value}T00:00:00.000Z`).toISOString().startsWith(value)
+  // Why: the regex accepts 2026-02-31, so only a round-trip proves a real calendar
+  // date — built via Date.UTC because parsing an out-of-range month makes an Invalid
+  // Date whose toISOString() throws, and a throw inside refine() escapes safeParse.
+  const [year, month, day] = match.slice(1).map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  )
 }
 
 function parseLinearWriteId(writeId: string | undefined): string | undefined {

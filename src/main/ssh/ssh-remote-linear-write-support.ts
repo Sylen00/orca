@@ -1,6 +1,7 @@
 import type { RpcResponse } from '../runtime/rpc/core'
 import type { RpcDispatcher } from '../runtime/rpc/dispatcher'
 import { linearProjectTextCapError } from '../../shared/linear/project-agent-writes'
+import { normalizeLinearLineEndings } from '../linear/linear-text-digest'
 import { isLinearUuid, isLinearUuidV4 } from '../../shared/linear/uuid'
 
 type ParsedRemoteCli = {
@@ -155,7 +156,10 @@ export function assertRemoteProjectTextCap(
   cap: number,
   flag: 'name' | 'description'
 ): void {
-  const failure = linearProjectTextCapError(value, cap, flag)
+  // Why: the host counts the LF-normalized text it actually sends, so measuring the
+  // raw value here would reject a CRLF description the host would have accepted.
+  const measured = flag === 'description' ? normalizeLinearLineEndings(value) : value
+  const failure = linearProjectTextCapError(measured, cap, flag)
   if (failure) {
     throw new RemoteLinearWriteArgumentError('invalid_argument', failure)
   }

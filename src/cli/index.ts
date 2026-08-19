@@ -67,8 +67,18 @@ export async function main(
   // Why: repeated values collect only for flags the resolved command declares
   // repeatable, so the fold has to sit after command resolution and before any
   // handler or validation reads the flag map.
-  const resolved = normalizeCommandPositionals(COMMAND_SPECS, parseArgs(argv, COMMAND_PATHS))
-  const parsed = { ...resolved, flags: foldRepeatableFlags(COMMAND_SPECS, resolved) }
+  // Why: parsing runs before the main error boundary below, which needs `parsed` to
+  // build its context — so a usage error thrown here has to be reported on its own or
+  // it escapes main as an unhandled exception instead of a formatted CLI error.
+  let parsed: ReturnType<typeof normalizeCommandPositionals>
+  try {
+    const resolved = normalizeCommandPositionals(COMMAND_SPECS, parseArgs(argv, COMMAND_PATHS))
+    parsed = { ...resolved, flags: foldRepeatableFlags(COMMAND_SPECS, resolved) }
+  } catch (error) {
+    reportCliError(error, argv.includes('--json'), { commandPath: [] })
+    process.exitCode = 1
+    return
+  }
   const helpPath = resolveHelpPath(parsed)
   if (helpPath !== null) {
     printHelp(COMMAND_SPECS, helpPath)

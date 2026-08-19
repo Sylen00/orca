@@ -63,8 +63,7 @@ export async function resolveLinearProjectEditIntent(
       ...(request.priority !== undefined ? { priority: request.priority } : {}),
       ...(request.startDate !== undefined ? { startDate: request.startDate } : {}),
       ...(request.targetDate !== undefined ? { targetDate: request.targetDate } : {}),
-      ...(request.color !== undefined ? { color: request.color } : {}),
-      ...(request.icon !== undefined ? { icon: request.icon } : {})
+      ...(request.color !== undefined ? { color: request.color } : {})
     }
   }
 }

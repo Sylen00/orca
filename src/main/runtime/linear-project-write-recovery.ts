@@ -12,6 +12,13 @@ import type { LinearProjectUpdateAddIntent } from './linear-project-update-write
 const SAFE_COMMAND_TOKEN = /^[A-Za-z0-9._:@%+=,/-]+$/
 
 const PRIORITY_FLAG_VALUES = ['none', 'urgent', 'high', 'medium', 'low']
+// Why: dedup compares health and isDiffHidden, so a retry that drops them either
+// trips linear_invalid_write_id or silently re-posts with the diff shown.
+const HEALTH_FLAG_VALUES: Record<string, string> = {
+  onTrack: 'on-track',
+  atRisk: 'at-risk',
+  offTrack: 'off-track'
+}
 
 function commandToken(value: string, placeholder: string): string {
   return SAFE_COMMAND_TOKEN.test(value) ? value : placeholder
@@ -94,7 +101,6 @@ function editUnconfirmed(
       ...textDigestFields('name', edits.name),
       ...textDigestFields('description', edits.description),
       ...textDigestFields('content', edits.content ?? undefined),
-      ...textDigestFields('icon', edits.icon ?? undefined),
       nextSteps: [
         `Run \`${show}\` and compare the current fields against the requested counts and digests before retrying.`,
         'Do not retry a member, team, or label replacement until that read confirms the full current collection; another actor may have edited it.'
@@ -112,7 +118,13 @@ function updatePostUnconfirmed(
   const pinned = [
     'orca linear project update add',
     commandToken(target.projectId, 'PROJECT_ID'),
-    '--body-file -',
+    // Why: a blank-but-legal body is rejected by the stdin readers, so it has to travel
+    // inline — and verbatim, because dedup compares the body exactly. A newline cannot
+    // travel that way without splitting this line, so it stays on the unrunnable stdin
+    // form rather than silently retrying under a body that would fail the write-id check.
+    blankInlineBody(intent.body) ?? '--body-file -',
+    ...(intent.health ? [`--health=${HEALTH_FLAG_VALUES[intent.health] ?? 'HEALTH'}`] : []),
+    ...(intent.isDiffHidden ? ['--hide-diff'] : []),
     `--write-id=${commandToken(writeId, 'WRITE_ID')}`,
     `--workspace=${commandToken(target.workspaceId, 'WORKSPACE_ID')}`,
     '--json'
@@ -160,9 +172,8 @@ function createUnconfirmed(
       ...textDigestFields('name', intent.name),
       ...textDigestFields('description', intent.description),
       ...textDigestFields('content', intent.content),
-      ...textDigestFields('icon', intent.icon),
       nextSteps: [
-        `Retry once with the pinned command, replacing every UPPERCASE placeholder with the exact original text and supplying the same content on stdin: \`${pinned}\`.`
+        `Retry once with the pinned command, replacing every UPPERCASE placeholder with the exact original text, escaped for your shell${pinned.includes('--content-file -') ? ', and supplying the same content on stdin' : ''}: \`${pinned}\`.`
       ],
       ...(recovery.cause ? { cause: sanitizeLinearErrorMessage(recovery.cause) } : {})
     }
@@ -176,10 +187,18 @@ function createUnconfirmed(
 function createRetryCommand(writeId: string, intent: LinearProjectCreateIntent): string {
   return [
     'orca linear project create',
-    '--name NAME',
+    // Why: the agent substitutes the real text here, and an unquoted `Payments V2`
+    // would split into a stray positional the create spec rejects outright.
+    '--name="NAME"',
     ...intent.teamIds.map((id) => `--team=${commandToken(id, 'TEAM_ID')}`),
-    ...(intent.description !== undefined ? ['--description DESCRIPTION'] : []),
-    ...(intent.content !== undefined ? ['--content-file -'] : []),
+    ...(intent.description !== undefined ? ['--description="DESCRIPTION"'] : []),
+    // Why: the stdin readers reject whitespace-only input too, so a blank body has to
+    // travel inline. It travels as `--content=` rather than the literal text because
+    // Linear stores every blank spelling as '' anyway, and a newline in the value
+    // would split this command across two lines.
+    ...(intent.content !== undefined
+      ? [intent.content.trim() === '' ? '--content=' : '--content-file -']
+      : []),
     ...(intent.statusId ? [`--status=${commandToken(intent.statusId, 'STATUS_ID')}`] : []),
     ...(intent.leadId ? [`--lead=${commandToken(intent.leadId, 'LEAD_ID')}`] : []),
     ...(intent.memberIds ?? []).map((id) => `--member=${commandToken(id, 'MEMBER_ID')}`),
@@ -191,12 +210,19 @@ function createRetryCommand(writeId: string, intent: LinearProjectCreateIntent):
     ...(intent.targetDate
       ? [`--target-date=${commandToken(intent.targetDate, 'TARGET_DATE')}`]
       : []),
-    // Why: a #RRGGBB literal starts a shell comment, so it is always a placeholder.
-    ...(intent.color ? ['--color COLOR'] : []),
+    // Why: `--color #RRGGBB` would comment out the rest of the line on POSIX shells
+    // and take --write-id with it; `#` mid-word after `=` is literal in every shell.
+    ...(intent.color ? [`--color=${commandToken(intent.color, 'COLOR')}`] : []),
     `--write-id=${commandToken(writeId, 'WRITE_ID')}`,
     `--workspace=${commandToken(intent.workspaceId, 'WORKSPACE_ID')}`,
     '--json'
   ].join(' ')
+}
+
+/** A whitespace-only body that still fits on one line, as a verbatim inline flag. */
+function blankInlineBody(body: string): string | null {
+  const isBlank = body.trim() === ''
+  return isBlank && !/[\r\n]/.test(body) ? `--body="${body}"` : null
 }
 
 function textDigestFields(

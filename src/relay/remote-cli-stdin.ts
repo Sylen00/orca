@@ -38,8 +38,7 @@ const REMOTE_STDIN_BOOLEAN_FLAGS = new Set([
   'clear-members',
   'clear-labels',
   'clear-start-date',
-  'clear-target-date',
-  'clear-icon'
+  'clear-target-date'
 ])
 
 function parseRemoteCliCommandPath(argv: string[]): string[] {

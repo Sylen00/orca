@@ -1,4 +1,5 @@
 import { normalizeLinearLineEndings } from '../linear/linear-text-digest'
+import { sameLinearProjectContent } from '../linear/project-content-rewrites'
 
 /** A fully resolved create intent: every reference is already a Linear UUID. */
 export type LinearProjectCreateIntent = {
@@ -17,7 +18,6 @@ export type LinearProjectCreateIntent = {
   startDate?: string
   targetDate?: string
   color?: string
-  icon?: string
 }
 
 /**
@@ -37,7 +37,6 @@ export type LinearProjectCreateSnapshot = {
   startDate?: string | null
   targetDate?: string | null
   color?: string | null
-  icon?: string | null
 }
 
 /**
@@ -53,7 +52,7 @@ export function projectMatchesCreateIntent(
     snapshot.name === intent.name &&
     idSetMatches(snapshot.teams, intent.teamIds) &&
     textMatches(snapshot.description, intent.description) &&
-    textMatches(snapshot.content, intent.content) &&
+    contentMatches(snapshot.content, intent.content) &&
     refMatches(snapshot.status, intent.statusId) &&
     refMatches(snapshot.lead, intent.leadId) &&
     optionalIdSetMatches(snapshot.members, intent.memberIds) &&
@@ -61,8 +60,7 @@ export function projectMatchesCreateIntent(
     scalarMatches(snapshot.priority, intent.priority) &&
     scalarMatches(snapshot.startDate, intent.startDate) &&
     scalarMatches(snapshot.targetDate, intent.targetDate) &&
-    caseInsensitiveMatches(snapshot.color, intent.color) &&
-    scalarMatches(snapshot.icon, intent.icon)
+    caseInsensitiveMatches(snapshot.color, intent.color)
   )
 }
 
@@ -74,6 +72,15 @@ function textMatches(actual: string | null | undefined, requested: string | unde
   return (
     requested === undefined ||
     normalizeLinearLineEndings(actual ?? '') === normalizeLinearLineEndings(requested)
+  )
+}
+
+// Why: Linear rewrites `content` Markdown as it stores it, so a stored value never
+// reads back byte-identical to what was requested; compare intent, not spelling.
+function contentMatches(actual: string | null | undefined, requested: string | undefined): boolean {
+  return (
+    requested === undefined ||
+    sameLinearProjectContent(actual ?? null, normalizeLinearLineEndings(requested))
   )
 }
 

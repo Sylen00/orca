@@ -41,7 +41,7 @@ describe('linearProjectWriteUnconfirmed for project update posts', () => {
     expect(steps[0]).not.toContain('\n')
     expect(steps[0]).not.toContain('\\')
     expect(steps[0]).toContain(
-      `orca linear project update add ${PROJECT_ID} --body-file - --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
+      `orca linear project update add ${PROJECT_ID} --body-file - --health=at-risk --hide-diff --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
     )
     expect(steps[0]).toContain('exact same body on stdin')
   })
@@ -138,7 +138,96 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex')
 }
 
+// Why: a whitespace-only body is a legal post, but the stdin readers reject blank
+// input, so `--body-file -` would hand back a retry that cannot be run.
+it.each([' ', '\t', '   '])('inlines a blank update body verbatim (%j)', (body) => {
+  const error = linearProjectWriteUnconfirmed({
+    kind: 'update-add',
+    target: { projectId: PROJECT_ID, workspaceId: WORKSPACE_ID },
+    writeId: WRITE_ID,
+    intent: intent({ body })
+  })
+
+  // Verbatim, because dedup compares the body exactly rather than canonicalizing it.
+  expect(retryStep(error)).toContain(`--body="${body}"`)
+  expect(retryStep(error)).not.toContain('--body-file -')
+  expect(retryStep(error).split('\n')).toHaveLength(1)
+})
+
+// Why: no platform-neutral way to put a newline on one line, and a body that fails
+// the write-id check on retry is worse than one the agent has to supply by hand.
+it.each(['\n', '  \n '])('keeps a newline-bearing blank body on stdin (%j)', (body) => {
+  const error = linearProjectWriteUnconfirmed({
+    kind: 'update-add',
+    target: { projectId: PROJECT_ID, workspaceId: WORKSPACE_ID },
+    writeId: WRITE_ID,
+    intent: intent({ body })
+  })
+
+  expect(retryStep(error)).toContain('--body-file -')
+  expect(retryStep(error).split('\n')).toHaveLength(1)
+})
+
 describe('linearProjectWriteUnconfirmed for project creates', () => {
+  // Why: the agent substitutes the real project name, and an unquoted `Payments V2`
+  // used to split into a stray positional that the create spec rejects outright.
+  it('survives substituting a name that contains spaces', () => {
+    const error = linearProjectWriteUnconfirmed({
+      kind: 'create',
+      writeId: WRITE_ID,
+      intent: createIntent({ name: 'Payments V2' })
+    })
+
+    expect(retryStep(error)).toContain('--name="NAME"')
+    expect(retryStep(error).replace('NAME', 'Payments V2')).toContain('--name="Payments V2"')
+  })
+
+  // Why: both stdin readers reject whitespace-only input, not just empty, so a
+  // blank-but-not-empty body still has to travel inline to stay runnable.
+  it.each([' ', '\n', '  \n '])('offers a runnable retry for blank content %j', (content) => {
+    const error = linearProjectWriteUnconfirmed({
+      kind: 'create',
+      writeId: WRITE_ID,
+      intent: createIntent({ content })
+    })
+
+    expect(retryStep(error)).toContain('--content=')
+    expect(retryStep(error)).not.toContain('--content-file -')
+    expect(retryStep(error)).not.toContain('on stdin')
+    // Why: the retry contract is one line; a newline in the value would split it.
+    expect(retryStep(error).split('\n')).toHaveLength(1)
+  })
+
+  // Why: an agent substitutes the real #RRGGBB into the placeholder, and a
+  // space-separated `--color #...` would comment out --write-id on every POSIX
+  // shell, turning the idempotent retry into a duplicate-create.
+  it('keeps the pinning flags past a substituted hex color on a POSIX shell', () => {
+    const error = linearProjectWriteUnconfirmed({
+      kind: 'create',
+      writeId: WRITE_ID,
+      intent: createIntent({ color: '#4EA7FC' })
+    })
+
+    const substituted = retryStep(error).replace('COLOR', '#4EA7FC')
+    const beforeComment = substituted.split(/(?:^|\s)#/)[0]
+    expect(substituted).toContain('--color=#4EA7FC')
+    expect(beforeComment).toContain(`--write-id=${WRITE_ID}`)
+    expect(beforeComment).toContain('--json')
+  })
+
+  // Why: both stdin readers reject blank input, so `--content-file -` would hand
+  // back a retry that cannot be run at all.
+  it('offers a runnable retry for a create whose content was empty', () => {
+    const error = linearProjectWriteUnconfirmed({
+      kind: 'create',
+      writeId: WRITE_ID,
+      intent: createIntent({ content: '' })
+    })
+
+    expect(retryStep(error)).toContain('--content=')
+    expect(retryStep(error)).not.toContain('--content-file -')
+  })
+
   it('emits one single-line retry command using resolved ids and placeholders', () => {
     const error = linearProjectWriteUnconfirmed({
       kind: 'create',
@@ -153,8 +242,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
         priority: 0,
         startDate: '2026-01-05',
         targetDate: '2026-02-28',
-        color: '#5E6AD2',
-        icon: 'Rocket'
+        color: '#5E6AD2'
       })
     })
 
@@ -162,20 +250,19 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
     expect(step).not.toContain('\n')
     expect(step).not.toContain('\\')
     expect(step).toContain(
-      `orca linear project create --name NAME --team=${TEAM_ID} --description DESCRIPTION --content-file - --status=${STATUS_ID} --lead=${LEAD_ID} --member=${LEAD_ID} --label=${LABEL_ID} --priority=none --start-date=2026-01-05 --target-date=2026-02-28 --color COLOR --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
+      `orca linear project create --name="NAME" --team=${TEAM_ID} --description="DESCRIPTION" --content-file - --status=${STATUS_ID} --lead=${LEAD_ID} --member=${LEAD_ID} --label=${LABEL_ID} --priority=none --start-date=2026-01-05 --target-date=2026-02-28 --color=COLOR --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
     )
     expect(step).toContain('replacing every UPPERCASE placeholder')
   })
 
-  it('never embeds the project name, prose, icon, or color text in the retry command', () => {
+  it('never embeds the project name, prose, or color text in the retry command', () => {
     const error = linearProjectWriteUnconfirmed({
       kind: 'create',
       writeId: WRITE_ID,
       intent: createIntent({
         description: 'short summary',
         content: CONTENT,
-        color: '#5E6AD2',
-        icon: '🚀 rocket'
+        color: '#5E6AD2'
       })
     })
 
@@ -185,7 +272,6 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
     expect(step).not.toContain('whoami')
     expect(step).not.toContain('short summary')
     expect(step).not.toContain('Overview')
-    expect(step).not.toContain('rocket')
     expect(step).not.toContain('#5E6AD2')
     expect(step).not.toContain('$')
     expect(step).not.toContain('|')
@@ -207,7 +293,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
 
     const step = retryStep(error)
     expect(step).toContain(
-      'orca linear project create --name NAME --team=TEAM_ID --status=STATUS_ID --lead=LEAD_ID --member=MEMBER_ID --label=LABEL_ID --write-id=WRITE_ID --workspace=WORKSPACE_ID --json'
+      'orca linear project create --name="NAME" --team=TEAM_ID --status=STATUS_ID --lead=LEAD_ID --member=MEMBER_ID --label=LABEL_ID --write-id=WRITE_ID --workspace=WORKSPACE_ID --json'
     )
     expect(step).not.toContain('rm -rf')
     expect(step).not.toContain('whoami')
@@ -229,8 +315,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
         priority: 0,
         startDate: '2026-01-05',
         targetDate: '2026-02-28',
-        color: '#5E6AD2',
-        icon: 'Rocket'
+        color: '#5E6AD2'
       }),
       cause: 'Linear write deadline elapsed before confirmation.'
     })
@@ -254,8 +339,6 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
       descriptionSha256: sha256('one\ntwo'),
       contentChars: 'alpha\nbeta'.length,
       contentSha256: sha256('alpha\nbeta'),
-      iconChars: 'Rocket'.length,
-      iconSha256: sha256('Rocket'),
       cause: 'Linear write deadline elapsed before confirmation.'
     })
   })
@@ -269,7 +352,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
 
     const step = retryStep(error)
     expect(step).toContain(
-      `orca linear project create --name NAME --team=${TEAM_ID} --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
+      `orca linear project create --name="NAME" --team=${TEAM_ID} --write-id=${WRITE_ID} --workspace=${WORKSPACE_ID} --json`
     )
     expect(recoveryData(error)).toMatchObject({
       statusId: null,
@@ -283,9 +366,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
       descriptionChars: null,
       descriptionSha256: null,
       contentChars: null,
-      contentSha256: null,
-      iconChars: null,
-      iconSha256: null
+      contentSha256: null
     })
     expect(recoveryData(error)).not.toHaveProperty('cause')
   })
@@ -297,7 +378,7 @@ describe('linearProjectWriteUnconfirmed for project creates', () => {
       intent: createIntent({ description: '' })
     })
 
-    expect(retryStep(error)).toContain('--description DESCRIPTION')
+    expect(retryStep(error)).toContain('--description="DESCRIPTION"')
     expect(recoveryData(error)).toMatchObject({
       descriptionChars: 0,
       descriptionSha256: sha256('')
@@ -355,15 +436,14 @@ describe('linearProjectWriteUnconfirmed for project field edits', () => {
     const error = linearProjectWriteUnconfirmed(
       editRecovery(
         {
-          requested: ['name', 'description', 'content', 'status', 'lead', 'teams', 'icon'],
+          requested: ['name', 'description', 'content', 'status', 'lead', 'teams'],
           edits: {
             name: HOSTILE_NAME,
             description: 'one\ntwo',
             content: CONTENT,
             statusId: STATUS_ID,
             leadId: LEAD_ID,
-            teamIds: [TEAM_ID],
-            icon: 'Rocket'
+            teamIds: [TEAM_ID]
           }
         },
         'Linear write deadline elapsed before confirmation.'
@@ -383,31 +463,26 @@ describe('linearProjectWriteUnconfirmed for project field edits', () => {
       descriptionSha256: sha256('one\ntwo'),
       contentChars: CONTENT.length,
       contentSha256: sha256(CONTENT),
-      iconChars: 'Rocket'.length,
-      iconSha256: sha256('Rocket'),
       cause: 'Linear write deadline elapsed before confirmation.'
     })
     const steps = (recoveryData(error).nextSteps as string[]).join(' ')
     expect(steps).not.toContain('rm -rf')
     expect(steps).not.toContain('Overview')
-    expect(steps).not.toContain('Rocket')
   })
 
   it('records cleared text fields as requested with no digest and omits an absent cause', () => {
     const error = linearProjectWriteUnconfirmed(
       editRecovery({
-        requested: ['content', 'lead', 'icon'],
-        edits: { content: null, leadId: null, icon: null }
+        requested: ['content', 'lead'],
+        edits: { content: null, leadId: null }
       })
     )
 
     expect(recoveryData(error)).toMatchObject({
-      requestedFields: ['content', 'lead', 'icon'],
+      requestedFields: ['content', 'lead'],
       leadId: null,
       contentChars: null,
-      contentSha256: null,
-      iconChars: null,
-      iconSha256: null
+      contentSha256: null
     })
     expect(recoveryData(error)).not.toHaveProperty('cause')
   })

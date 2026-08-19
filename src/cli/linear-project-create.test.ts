@@ -245,6 +245,15 @@ describe('orca linear project create', () => {
     expect(firstError()).toContain('Missing required --name')
   })
 
+  // Why: `--member=` from an unset shell variable used to create the project
+  // without that member and exit 0; `edit` has always rejected the same input.
+  it.each(['member', 'label'])('rejects an empty --%s instead of dropping it', async (flag) => {
+    await main([...CREATE, '--name', 'P', '--team', 'ENG', `--${flag}=`], '/tmp/repo')
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(firstError()).toContain(`--${flag} needs at least one value`)
+  })
+
   it('rejects a whitespace-only --name', async () => {
     await main([...CREATE, '--name', '   ', '--team', 'ENG'], '/tmp/repo')
 
@@ -420,7 +429,7 @@ describe('orca linear project create', () => {
     expect(firstError()).toContain('--write-id must be a UUID v4')
   })
 
-  it('rejects over-cap content with linear_body_too_large and no RPC', async () => {
+  it('rejects over-cap content naming --content rather than the body flag', async () => {
     await main(
       [
         ...CREATE,
@@ -434,10 +443,12 @@ describe('orca linear project create', () => {
     )
 
     expect(callMock).not.toHaveBeenCalled()
-    expect(firstError()).toContain(`Linear body must be at most ${LINEAR_WRITE_BODY_CAP}`)
+    expect(firstError()).toContain(`Linear content must be at most ${LINEAR_WRITE_BODY_CAP}`)
   })
 
-  it('rejects an over-cap description with linear_body_too_large and no RPC', async () => {
+  // Why: 255 is the cap that actually applies to --description, so an over-cap value
+  // must name that limit rather than the 65,000-char body cap it also exceeds.
+  it('rejects an over-cap description against the description cap and makes no RPC', async () => {
     await main(
       [
         ...CREATE,
@@ -452,8 +463,9 @@ describe('orca linear project create', () => {
     )
 
     expect(callMock).not.toHaveBeenCalled()
-    const printed = JSON.parse(firstLog()) as { error: { code: string } }
-    expect(printed.error.code).toBe('linear_body_too_large')
+    const printed = JSON.parse(firstLog()) as { error: { code: string; message: string } }
+    expect(printed.error.code).toBe('invalid_argument')
+    expect(printed.error.message).toContain('--description must be at most 255 characters')
   })
 
   it('rejects --workspace all with linear_invalid_workspace and no RPC', async () => {

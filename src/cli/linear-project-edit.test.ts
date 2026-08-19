@@ -180,6 +180,18 @@ describe('orca linear project edit', () => {
     expect(firstError()).toContain('--clear-content takes no value')
   })
 
+  // Why: consumers test booleans with `=== true`, so `--hide-diff=true` used to parse
+  // as the string 'true' and read as off — silently doing the opposite of what was asked.
+  it.each(['--hide-diff=true', '--json=true', '--clear-lead=false'])(
+    'rejects %s rather than reading it as off',
+    async (token) => {
+      await main([...EDIT, 'payments-v2', token], '/tmp/repo')
+
+      expect(callMock).not.toHaveBeenCalled()
+      expect(firstError()).toContain('takes no value')
+    }
+  )
+
   it('clears description to empty text and content, lead and dates to null', async () => {
     await runEdit([
       '--clear-description',

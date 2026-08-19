@@ -77,8 +77,7 @@ describe('shouldReadRemoteCliStdin', () => {
     'clear-members',
     'clear-labels',
     'clear-start-date',
-    'clear-target-date',
-    'clear-icon'
+    'clear-target-date'
   ])('still detects piped content past --%s', (clearFlag) => {
     expect(
       shouldReadRemoteCliStdin([

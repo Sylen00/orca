@@ -107,7 +107,16 @@ export function parseArgs(argv: string[], commandPaths?: readonly string[][]): P
     // treats a `--`-leading next token as a new flag, so it can't express one.
     const equalsIndex = assignment.indexOf('=')
     if (equalsIndex !== -1) {
-      setFlag(assignment.slice(0, equalsIndex), assignment.slice(equalsIndex + 1))
+      const name = assignment.slice(0, equalsIndex)
+      // Why: consumers test boolean flags with `=== true`, so `--hide-diff=true` would
+      // parse to the string 'true' and read as off — silently doing the opposite.
+      if (BOOLEAN_FLAGS.has(name)) {
+        throw new RuntimeClientError(
+          'invalid_argument',
+          `--${name} takes no value; pass --${name} on its own or omit it.`
+        )
+      }
+      setFlag(name, assignment.slice(equalsIndex + 1))
       continue
     }
 

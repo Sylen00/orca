@@ -139,8 +139,7 @@ describe('Linear project create', () => {
         labelIds: ['label-1'],
         startDate: '2026-01-01',
         targetDate: '2026-02-01',
-        color: '#5e6ad2',
-        icon: 'Rocket'
+        color: '#5e6ad2'
       }),
       'workspace-1'
     )
@@ -159,8 +158,7 @@ describe('Linear project create', () => {
       priority: 0,
       startDate: '2026-01-01',
       targetDate: '2026-02-01',
-      color: '#5e6ad2',
-      icon: 'Rocket'
+      color: '#5e6ad2'
     })
   })
 

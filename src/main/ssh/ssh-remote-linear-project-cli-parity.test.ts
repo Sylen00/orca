@@ -154,4 +154,39 @@ describe('linear project update add matches the local CLI', () => {
   ])('rejects %j with the local CLI wording', async (tail, error) => {
     await expect(remote([...UPDATE_ADD, ...tail])).resolves.toEqual({ error })
   })
+
+  // Why: the host caps the LF-normalized text it sends, so measuring the raw
+  // value here would reject a CRLF description the host would have accepted.
+  it('measures the --description cap on normalized text, as the host does', () => {
+    const parsed = parseRemoteCliArgs([
+      'linear',
+      'project',
+      'edit',
+      'launch-q3',
+      '--description',
+      `${'a'.repeat(253)}\r\n\r\n`
+    ])
+
+    expect(() => buildRemoteLinearProjectEditRequest(parsed, undefined)).not.toThrow()
+  })
+
+  // Why: the local CLI rejects `--lead=` from an unset variable; the SSH transport used
+  // to drop it and create the project with no lead at exit 0.
+  it.each(['status', 'lead'])(
+    'rejects an empty --%s on create, as the local CLI does',
+    async (flag) => {
+      const outcome = await remote([
+        'linear',
+        'project',
+        'create',
+        '--name',
+        'Launch',
+        '--team',
+        'ENG',
+        `--${flag}=`
+      ])
+
+      expect(outcome).toEqual({ error: `--${flag} needs a value` })
+    }
+  )
 })

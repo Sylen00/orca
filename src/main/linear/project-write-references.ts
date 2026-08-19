@@ -51,8 +51,9 @@ export async function resolveProjectStatusForWrite(
 }
 
 /**
- * Exact label matches for a write. Unlike discovery this pages without a scan
- * cap, because uniqueness has to be proven rather than sampled.
+ * Exact label matches for a write. Unlike discovery this pages without a scan cap,
+ * because uniqueness has to be proven rather than sampled — and when the page bound
+ * cuts that scan short it fails rather than answering from a partial set.
  */
 export async function resolveProjectLabelsForWrite(
   inputs: string[],
@@ -74,11 +75,17 @@ async function resolveOneProjectLabel(
   input: string,
   signal: AbortSignal | undefined
 ): Promise<LinearProjectLabelRow> {
-  const { rows } = await readProjectLabelRows(entry, {
+  const { rows, hasMore } = await readProjectLabelRows(entry, {
     filter: isLinearUuid(input) ? { id: { eq: input } } : { name: { eqIgnoreCase: input } },
     scanCap: Number.POSITIVE_INFINITY,
     signal
   })
+  // Why: with no scan cap, `hasMore` can only mean the page bound cut the walk short,
+  // so uniqueness is unproven — a lone match here could be one of several, and no
+  // match could be a false miss. Applying a guessed label is worse than failing.
+  if (hasMore) {
+    throw labelError(`Could not prove "${input}" matches exactly one Linear project label.`, [])
+  }
   const assignable = rows.filter(isAssignableProjectLabel)
   if (assignable.length === 1) {
     return assignable[0]

@@ -85,8 +85,12 @@ export function foldRemoteFlagOccurrences(
   const flags = new Map<string, string | boolean>()
   for (const { name, value } of occurrences) {
     const previous = flags.get(name)
-    if (typeof previous === 'string' && typeof value === 'string' && repeatable.has(name)) {
-      flags.set(name, `${previous}${REPEATED_FLAG_SEPARATOR}${value}`)
+    if (repeatable.has(name) && typeof previous === 'string') {
+      // Why: a trailing valueless `--member` must not wipe the members already
+      // collected, which is what the local parser does by dropping non-strings.
+      if (typeof value === 'string') {
+        flags.set(name, `${previous}${REPEATED_FLAG_SEPARATOR}${value}`)
+      }
       continue
     }
     flags.set(name, value)

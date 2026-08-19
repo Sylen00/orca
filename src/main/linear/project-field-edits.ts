@@ -33,7 +33,6 @@ export type LinearProjectFieldEdits = {
   startDate?: string | null
   targetDate?: string | null
   color?: string
-  icon?: string | null
 }
 
 export type LinearProjectEditOutcome = {
@@ -203,9 +202,6 @@ function differingProjectFieldEdits(
   if (edits.color !== undefined && !sameLinearProjectColor(edits.color, fields.color)) {
     pending.color = edits.color
   }
-  if (edits.icon !== undefined && edits.icon !== fields.icon) {
-    pending.icon = edits.icon
-  }
   return pending
 }
 
@@ -230,8 +226,7 @@ const EDIT_KEY_BY_FIELD: Record<LinearProjectEditableField, keyof LinearProjectF
   priority: 'priority',
   startDate: 'startDate',
   targetDate: 'targetDate',
-  color: 'color',
-  icon: 'icon'
+  color: 'color'
 }
 
 type SnapshotComparison = (
@@ -263,8 +258,7 @@ const SAME_SNAPSHOT_FIELD: Record<LinearProjectEditableField, SnapshotComparison
   priority: (previous, current) => previous.priority === current.priority,
   startDate: (previous, current) => previous.startDate === current.startDate,
   targetDate: (previous, current) => previous.targetDate === current.targetDate,
-  color: (previous, current) => sameLinearProjectColor(previous.color, current.color),
-  icon: (previous, current) => previous.icon === current.icon
+  color: (previous, current) => sameLinearProjectColor(previous.color, current.color)
 }
 
 /** Requested fields whose value actually moved, in LINEAR_PROJECT_EDITABLE_FIELDS order. */

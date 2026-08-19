@@ -2058,6 +2058,10 @@ function getAgentLaunchPlatformForRepo(
   return isWindowsAbsolutePathLike(repo.path) ? 'win32' : 'linux'
 }
 
+// Why: the client abandons a Linear write at 75s and the mutation itself gets 25s, so
+// every pre-write read shares this one budget — a fresh deadline per phase would sum
+// past 75s and the caller would see a raw RPC timeout instead of a structured error.
+const LINEAR_PRE_WRITE_BUDGET_MS = 30_000
 // Why: long enough for a phone to reconnect and retry a create whose response
 // was lost, short enough that an intentional later re-resume forks fresh.
 const MOBILE_TERMINAL_CREATE_RESULT_TTL_MS = 60_000
@@ -35666,7 +35670,12 @@ export class OrcaRuntimeService {
     if (body.length > LINEAR_WRITE_BODY_CAP) {
       throw linearError('linear_body_too_large', 'Linear project update body is too large.')
     }
-    const project = await this.resolveLinearProjectForWrite(request.input, request.workspaceId)
+    const deadlineAt = this.preWriteDeadline()
+    const project = await this.resolveLinearProjectForWrite(
+      request.input,
+      request.workspaceId,
+      deadlineAt
+    )
     const writeId = request.writeId ?? randomUUID()
     const intent: LinearProjectUpdateAddIntent = {
       projectId: project.id,
@@ -35684,7 +35693,12 @@ export class OrcaRuntimeService {
       })
     const existing =
       request.writeId !== undefined
-        ? await this.getMatchingLinearProjectUpdateWrite(writeId, project.workspaceId, intent)
+        ? await this.getMatchingLinearProjectUpdateWrite(
+            writeId,
+            project.workspaceId,
+            intent,
+            deadlineAt
+          )
         : null
     if (existing) {
       return this.linearProjectUpdateAddResult(existing, project, body.length, writeId, true)
@@ -35722,22 +35736,27 @@ export class OrcaRuntimeService {
 
   private async resolveLinearProjectForWrite(
     input: string,
-    workspaceId: string | undefined
+    workspaceId: string | undefined,
+    deadlineAt: number
   ): Promise<LinearResolvedProject> {
-    try {
-      return await resolveLinearProjectTarget(input, workspaceId)
-    } catch (error) {
-      throw this.mapLinearReadFailure(error)
-    }
+    // Why: a non-UUID target fans out across every connected workspace with paged
+    // searches, so it shares the pre-write budget rather than running before it — the
+    // last phase that could otherwise outlast the client's own write timeout.
+    return await this.withinPreWriteBudget(deadlineAt, 'resolve the project target', (signal) =>
+      resolveLinearProjectTarget(input, workspaceId, { signal })
+    )
   }
 
   private async getMatchingLinearProjectUpdateWrite(
     writeId: string,
     workspaceId: string,
-    intent: LinearProjectUpdateAddIntent
+    intent: LinearProjectUpdateAddIntent,
+    deadlineAt: number
   ): Promise<LinearProjectUpdateRecord | null> {
-    const posted = await this.readLinearWriteLookup(() =>
-      getProjectUpdateById(writeId, workspaceId)
+    const posted = await this.withinPreWriteBudget(
+      deadlineAt,
+      'look up the pinned write id',
+      (signal) => getProjectUpdateById(writeId, workspaceId, { signal })
     )
     if (!posted) {
       return null
@@ -35759,7 +35778,12 @@ export class OrcaRuntimeService {
   ): Promise<LinearProjectUpdateRecord> {
     try {
       // Why: a duplicate-id response can mean the original post landed; only the full intent proves this pinned retry.
-      const posted = await this.getMatchingLinearProjectUpdateWrite(writeId, workspaceId, intent)
+      const posted = await this.getMatchingLinearProjectUpdateWrite(
+        writeId,
+        workspaceId,
+        intent,
+        this.preWriteDeadline()
+      )
       if (posted) {
         return posted
       }
@@ -35820,7 +35844,8 @@ export class OrcaRuntimeService {
     this.assertLinearProseWithinCap(request.description)
     this.assertLinearProseWithinCap(request.content)
     this.validateLinearCreateWorkspaceScope(request.workspaceId)
-    const intent = await this.linearProjectCreateIntentForWrite(request)
+    const deadlineAt = this.preWriteDeadline()
+    const intent = await this.linearProjectCreateIntentForWrite(request, deadlineAt)
     const unconfirmed = (cause?: string): LinearAgentAccessError =>
       linearProjectWriteUnconfirmed({
         kind: 'create',
@@ -35830,7 +35855,7 @@ export class OrcaRuntimeService {
       })
     const existing =
       request.writeId !== undefined
-        ? await this.getMatchingLinearProjectCreate(writeId, intent)
+        ? await this.getMatchingLinearProjectCreate(writeId, intent, deadlineAt)
         : null
     if (existing) {
       return this.linearProjectCreateResult(existing, intent.workspaceId, writeId, true)
@@ -35858,21 +35883,64 @@ export class OrcaRuntimeService {
   }
 
   private async linearProjectCreateIntentForWrite(
-    request: LinearProjectCreateRequest
+    request: LinearProjectCreateRequest,
+    deadlineAt: number
   ): Promise<LinearProjectCreateIntent> {
+    return await this.withinPreWriteBudget(
+      deadlineAt,
+      'resolve every requested reference',
+      (signal) => resolveLinearProjectCreateIntent(request, { signal })
+    )
+  }
+
+  /**
+   * Reference resolution is one sequential Linear read per reference and runs before
+   * the write deadline exists. Unbounded, a slow Linear outlasts the client's own
+   * timeout and the create still lands — with its write id never delivered, so the
+   * agent's retry duplicates the project. Failing here is safe: nothing is written yet.
+   */
+  /**
+   * Why: these snapshot reads sit outside the write deadline by design, but unbounded
+   * they outlast the client's own 75s budget — and when they do, the agent never
+   * receives the `linear_write_unconfirmed` envelope the recovery contract depends on.
+   */
+  /**
+   * Why: every pre-write phase shares one budget rather than taking a fresh deadline
+   * each. Per-phase deadlines would sum past the client's own write timeout, so the
+   * caller would see a raw RPC timeout instead of the structured error this exists for.
+   */
+  private preWriteDeadline(): number {
+    return Date.now() + LINEAR_PRE_WRITE_BUDGET_MS
+  }
+
+  private async withinPreWriteBudget<T>(
+    deadlineAt: number,
+    phase: string,
+    run: (signal: AbortSignal) => Promise<T>
+  ): Promise<T> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), Math.max(0, deadlineAt - Date.now()))
     try {
-      return await resolveLinearProjectCreateIntent(request)
+      return await run(controller.signal)
     } catch (error) {
+      if (controller.signal.aborted) {
+        throw linearError('linear_timeout', `Linear did not ${phase} in time; nothing was written.`)
+      }
       throw this.mapLinearReadFailure(error)
+    } finally {
+      clearTimeout(timer)
     }
   }
 
   private async getMatchingLinearProjectCreate(
     writeId: string,
-    intent: LinearProjectCreateIntent
+    intent: LinearProjectCreateIntent,
+    deadlineAt: number
   ): Promise<LinearProjectWriteRecord | null> {
-    const existing = await this.readLinearWriteLookup(() =>
-      getProjectByIdForAgent(writeId, intent.workspaceId)
+    const existing = await this.withinPreWriteBudget(
+      deadlineAt,
+      'look up the pinned write id',
+      (signal) => getProjectByIdForAgent(writeId, intent.workspaceId, { signal })
     )
     if (!existing) {
       return null
@@ -35893,7 +35961,11 @@ export class OrcaRuntimeService {
   ): Promise<LinearProjectWriteRecord> {
     try {
       // Why: duplicate_id can mean the original create landed; only the full intent proves it.
-      const existing = await this.getMatchingLinearProjectCreate(writeId, intent)
+      const existing = await this.getMatchingLinearProjectCreate(
+        writeId,
+        intent,
+        this.preWriteDeadline()
+      )
       if (existing) {
         return existing
       }
@@ -35933,12 +36005,23 @@ export class OrcaRuntimeService {
     }
     this.assertLinearProseWithinCap(request.description)
     this.assertLinearProseWithinCap(request.content ?? undefined)
-    const project = await this.resolveLinearProjectForWrite(request.input, request.workspaceId)
-    const intent = await this.linearProjectEditIntentForWrite(request, project.workspaceId)
+    const deadlineAt = this.preWriteDeadline()
+    const project = await this.resolveLinearProjectForWrite(
+      request.input,
+      request.workspaceId,
+      deadlineAt
+    )
+    const intent = await this.linearProjectEditIntentForWrite(
+      request,
+      project.workspaceId,
+      deadlineAt
+    )
     // Why: the pre-edit snapshot is a read; inside the write deadline its timeout would
     // report an edit that was never sent as unconfirmed.
-    const previous = await this.readLinearWriteLookup(() =>
-      getProjectByIdForAgent(project.id, project.workspaceId)
+    const previous = await this.withinPreWriteBudget(
+      deadlineAt,
+      'read the project back',
+      (signal) => getProjectByIdForAgent(project.id, project.workspaceId, { signal })
     )
     // Why: no write id exists for a field edit, so recovery is a read-back, not a pinned retry.
     const snapshots = await this.runLinearAgentWrite(
@@ -35969,13 +36052,14 @@ export class OrcaRuntimeService {
 
   private async linearProjectEditIntentForWrite(
     request: LinearProjectEditRequest,
-    workspaceId: string
+    workspaceId: string,
+    deadlineAt: number
   ): Promise<LinearProjectEditIntent> {
-    try {
-      return await resolveLinearProjectEditIntent(request, workspaceId)
-    } catch (error) {
-      throw this.mapLinearReadFailure(error)
-    }
+    return await this.withinPreWriteBudget(
+      deadlineAt,
+      'resolve every requested reference',
+      (signal) => resolveLinearProjectEditIntent(request, workspaceId, { signal })
+    )
   }
 
   async linearIssueListForAgents(params: {

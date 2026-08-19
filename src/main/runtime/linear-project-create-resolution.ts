@@ -64,8 +64,7 @@ export async function resolveLinearProjectCreateIntent(
     ...(request.priority !== undefined ? { priority: request.priority } : {}),
     ...(request.startDate ? { startDate: request.startDate } : {}),
     ...(request.targetDate ? { targetDate: request.targetDate } : {}),
-    ...(request.color ? { color: request.color } : {}),
-    ...(request.icon ? { icon: request.icon } : {})
+    ...(request.color ? { color: request.color } : {})
   }
 }
 

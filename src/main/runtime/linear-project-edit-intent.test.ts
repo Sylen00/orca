@@ -91,8 +91,7 @@ describe('resolveLinearProjectEditIntent', () => {
         members: [],
         labels: [],
         startDate: null,
-        targetDate: null,
-        icon: null
+        targetDate: null
       },
       WORKSPACE_ID
     )
@@ -103,8 +102,7 @@ describe('resolveLinearProjectEditIntent', () => {
       memberIds: [],
       labelIds: [],
       startDate: null,
-      targetDate: null,
-      icon: null
+      targetDate: null
     })
     expect(resolveWorkspaceUserForWrite).not.toHaveBeenCalled()
     expect(resolveProjectLabelsForWrite).not.toHaveBeenCalled()

@@ -190,8 +190,7 @@ describe('Linear project field edits', () => {
         priority: 3,
         startDate: '2026-01-01',
         targetDate: '2026-02-01',
-        color: '#5e6ad2',
-        icon: 'Rocket'
+        color: '#5e6ad2'
       },
       'workspace-1'
     )
@@ -290,7 +289,6 @@ describe('Linear project field edits', () => {
         description: '',
         content: null,
         lead: null,
-        icon: null,
         startDate: null,
         targetDate: null,
         members: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
@@ -305,7 +303,6 @@ describe('Linear project field edits', () => {
         description: '',
         content: null,
         leadId: null,
-        icon: null,
         startDate: null,
         targetDate: null,
         memberIds: [],
@@ -320,7 +317,6 @@ describe('Linear project field edits', () => {
       description: '',
       content: ' ',
       leadId: null,
-      icon: null,
       startDate: null,
       targetDate: null,
       memberIds: [],

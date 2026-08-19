@@ -172,17 +172,7 @@ const EDIT_FIXTURE: LinearProjectEditResult = {
     slugId: 'launch-q3',
     url: 'https://linear.app/acme/project/launch-q3-1a2b3c'
   },
-  changed: [
-    'name',
-    'description',
-    'content',
-    'status',
-    'lead',
-    'members',
-    'priority',
-    'startDate',
-    'icon'
-  ],
+  changed: ['name', 'description', 'content', 'status', 'lead', 'members', 'priority', 'startDate'],
   previous: {
     name: 'Launch Q3',
     description: boundedString('Ship it'),
@@ -329,7 +319,7 @@ describe('shared project rendering', () => {
         'URL: https://linear.app/acme/project/launch-q3-1a2b3c',
         'Project id: project-1',
         'Workspace: workspace-1',
-        'Changed: name, description, content, status, lead, members, priority, startDate, icon',
+        'Changed: name, description, content, status, lead, members, priority, startDate',
         '  name: Launch Q3 -> Launch Q4',
         `  description: 7 chars sha256 ${'c'.repeat(64)} -> 11 chars sha256 ${'c'.repeat(64)}`,
         `  content: none -> 5 chars sha256 ${'c'.repeat(64)}`,
@@ -341,8 +331,7 @@ describe('shared project rendering', () => {
         '  priority: medium -> high',
         '  startDate: none -> 2026-01-01',
         '  targetDate: 2026-03-01 -> 2026-03-01 (unchanged)',
-        '  color: #112233 -> #112233 (unchanged)',
-        '  icon: none -> Rocket'
+        '  color: #112233 -> #112233 (unchanged)'
       ].join('\n')
     )
   })
@@ -373,12 +362,12 @@ describe('shared project rendering', () => {
   it('reports a field the host never returned as unset rather than none', () => {
     const output = formatLinearProjectEdit({
       ...EDIT_FIXTURE,
-      changed: ['icon'],
+      changed: ['color'],
       previous: {},
-      current: { icon: 'Rocket' }
+      current: { color: '#112233' }
     })
 
-    expect(output).toContain('  icon: unset -> Rocket')
+    expect(output).toContain('  color: unset -> #112233')
   })
 
   it('emits truncation, workspace-error and partial warning lines in order', () => {

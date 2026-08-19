@@ -87,6 +87,21 @@ describe('SSH remote command grammar', () => {
     expect(folded.get('name')).toBe('Second')
   })
 
+  // Why: the local parser drops valueless occurrences, so a trailing `--member`
+  // must not wipe the members already collected — that would create the project
+  // without them, exit 0, and say nothing.
+  it('keeps collected values when a repeatable flag ends with no value', () => {
+    const folded = foldRemoteFlagOccurrences(
+      ['linear', 'project', 'create'],
+      [
+        { name: 'member', value: 'ada' },
+        { name: 'member', value: true }
+      ]
+    )
+
+    expect(folded.get('member')).toBe('ada')
+  })
+
   it('does not leak project-create repeatability into other commands', () => {
     const issueCreate = parseRemoteCliArgs([
       'linear',

@@ -18,6 +18,11 @@ const HEALTH_BY_CLI_VALUE: Record<LinearProjectUpdateHealthInput, LinearProjectU
 
 /** Returns null for anything else, including the camelCase API spellings. */
 export function toLinearProjectUpdateHealth(value: string): LinearProjectUpdateHealth | null {
+  // Why: a plain-object lookup reaches Object.prototype, so `constructor` and
+  // `toString` would answer with a truthy function and pass for a real health value.
+  if (!Object.hasOwn(HEALTH_BY_CLI_VALUE, value)) {
+    return null
+  }
   return HEALTH_BY_CLI_VALUE[value as LinearProjectUpdateHealthInput] ?? null
 }
 
@@ -42,7 +47,6 @@ export type LinearProjectCreateRequest = {
   startDate?: string
   targetDate?: string
   color?: string
-  icon?: string
   writeId?: string
   workspaceId?: string
 }
@@ -108,14 +112,13 @@ export const LINEAR_PROJECT_EDITABLE_FIELDS = [
   'priority',
   'startDate',
   'targetDate',
-  'color',
-  'icon'
+  'color'
 ] as const
 export type LinearProjectEditableField = (typeof LINEAR_PROJECT_EDITABLE_FIELDS)[number]
 
 /**
- * Only the keys present were requested. `description` clears to `''`; `lead`, the
- * dates and `icon` clear to `null`; `members` and `labels` clear to `[]`.
+ * Only the keys present were requested. `description` clears to `''`; `lead` and the
+ * dates clear to `null`; `members` and `labels` clear to `[]`.
  * `content` is requested as `null` but lands as `''`: Linear ignores a null or
  * empty content write, so the host sends whitespace and the field never returns
  * to `null` once it has been set. `status` and `color` are non-null on `Project`
@@ -134,7 +137,6 @@ export type LinearProjectEditRequest = LinearProjectTargetRequest & {
   startDate?: string | null
   targetDate?: string | null
   color?: string
-  icon?: string | null
 }
 
 export type LinearProjectEditResult = {

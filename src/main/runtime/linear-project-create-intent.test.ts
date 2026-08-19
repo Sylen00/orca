@@ -30,7 +30,6 @@ function snapshot(
     startDate: null,
     targetDate: null,
     color: '#000000',
-    icon: null,
     ...overrides
   }
 }

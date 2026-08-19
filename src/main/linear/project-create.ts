@@ -33,7 +33,6 @@ export type LinearProjectCreateFields = {
   startDate?: string
   targetDate?: string
   color?: string
-  icon?: string
 }
 
 const UNCONFIRMED_MESSAGE = 'Project was created but could not be retrieved'
@@ -116,8 +115,7 @@ function createInput(
     ...(input.priority !== undefined ? { priority: input.priority } : {}),
     ...(input.startDate !== undefined ? { startDate: input.startDate } : {}),
     ...(input.targetDate !== undefined ? { targetDate: input.targetDate } : {}),
-    ...(input.color !== undefined ? { color: input.color } : {}),
-    ...(input.icon !== undefined ? { icon: input.icon } : {})
+    ...(input.color !== undefined ? { color: input.color } : {})
   }
 }
 

@@ -79,7 +79,7 @@ export async function buildProjectEditRequest(
   if (flags.has('clear-description')) {
     edits.description = ''
   } else if (flags.has('description')) {
-    edits.description = await readLinearProjectDescription(flags, cwd)
+    edits.description = readLinearProjectDescription(flags)
   }
   if (flags.has('clear-content')) {
     edits.content = null

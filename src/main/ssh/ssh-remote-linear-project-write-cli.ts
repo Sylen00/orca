@@ -127,8 +127,8 @@ function buildRemoteLinearProjectCreateRequest(
     name,
     teams,
     ...remoteProjectCreateText(parsed.flags, stdin),
-    status: optionalString(parsed.flags, 'status'),
-    lead: optionalString(parsed.flags, 'lead'),
+    status: presentOptionalString(parsed.flags, 'status'),
+    lead: presentOptionalString(parsed.flags, 'lead'),
     ...(parsed.flags.has('member')
       ? { members: uniqueReferences(repeatedString(parsed.flags, 'member')) }
       : {}),
@@ -142,6 +142,18 @@ function buildRemoteLinearProjectCreateRequest(
 }
 
 /** Description and content are never trimmed: empty prose is a meaningful create value. */
+/** Why: `--lead=` from an unset variable must fail, not create without a lead. */
+function presentOptionalString(
+  flags: Map<string, string | boolean>,
+  name: string
+): string | undefined {
+  const value = optionalString(flags, name)
+  if (flags.has(name) && value === undefined) {
+    throw new RemoteLinearWriteArgumentError('invalid_argument', `--${name} needs a value`)
+  }
+  return value
+}
+
 function remoteProjectCreateText(
   flags: Map<string, string | boolean>,
   stdin: string | undefined

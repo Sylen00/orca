@@ -232,7 +232,6 @@ describe('linear.agentProjectCreate params', () => {
         startDate: '2026-01-05',
         targetDate: '2026-02-28',
         color: '#5E6AD2',
-        icon: 'Rocket',
         writeId: WRITE_ID,
         workspaceId: 'workspace-1'
       })
@@ -252,7 +251,6 @@ describe('linear.agentProjectCreate params', () => {
       startDate: '2026-01-05',
       targetDate: '2026-02-28',
       color: '#5E6AD2',
-      icon: 'Rocket',
       writeId: WRITE_ID,
       workspaceId: 'workspace-1'
     })
@@ -291,6 +289,43 @@ describe('linear.agentProjectCreate params', () => {
       description: ''
     })
   })
+
+  // Why: every reference costs one sequential Linear round-trip on a shared
+  // limiter, so an unbounded array would pin Linear access for the whole runtime.
+  it('rejects a reference list past the per-field cap before reaching the runtime', async () => {
+    const runtime = makeRuntime()
+    const dispatcher = makeDispatcher(runtime)
+
+    const response = await dispatcher.dispatch(
+      makeRequest('linear.agentProjectCreate', {
+        name: 'Aurora',
+        teams: ['ENG'],
+        members: Array.from({ length: 51 }, (_, index) => `user-${index}`)
+      })
+    )
+
+    expect(errorMessage(response)).toContain('members accepts at most 50 values')
+    expect(runtime.linearProjectCreateForAgents).not.toHaveBeenCalled()
+  })
+
+  // Why: an out-of-range month made an Invalid Date whose toISOString() threw from
+  // inside refine(); safeParse does not contain that, and on the WebSocket transport
+  // the dispatch has no catch, so the request was never answered at all.
+  it.each(['2026-13-01', '2026-00-10', '2026-01-32', '2026-02-30'])(
+    'rejects the impossible date %s without throwing',
+    async (startDate) => {
+      const runtime = makeRuntime()
+      const dispatcher = makeDispatcher(runtime)
+
+      const response = await dispatcher.dispatch(
+        makeRequest('linear.agentProjectCreate', { name: 'Aurora', teams: ['ENG'], startDate })
+      )
+
+      expect(response.ok).toBe(false)
+      expect(errorMessage(response)).toContain('--start-date must be a real YYYY-MM-DD date')
+      expect(runtime.linearProjectCreateForAgents).not.toHaveBeenCalled()
+    }
+  )
 
   it('rejects a blank name, a missing name, and a missing or empty team set', async () => {
     const runtime = makeRuntime()
@@ -441,7 +476,6 @@ describe('linear.agentProjectEdit params', () => {
         startDate: '2026-01-05',
         targetDate: '2026-02-28',
         color: '#5E6AD2',
-        icon: 'Rocket',
         workspaceId: 'workspace-1'
       })
     )
@@ -461,7 +495,6 @@ describe('linear.agentProjectEdit params', () => {
       startDate: '2026-01-05',
       targetDate: '2026-02-28',
       color: '#5E6AD2',
-      icon: 'Rocket',
       workspaceId: 'workspace-1'
     })
   })
@@ -531,7 +564,7 @@ describe('linear.agentProjectEdit params', () => {
     })
   })
 
-  it('keeps null clears for content, lead, dates, and icon', async () => {
+  it('keeps null clears for content, lead, and dates', async () => {
     const runtime = makeRuntime()
     const response = await makeDispatcher(runtime).dispatch(
       makeRequest('linear.agentProjectEdit', {
@@ -539,8 +572,7 @@ describe('linear.agentProjectEdit params', () => {
         content: null,
         lead: null,
         startDate: null,
-        targetDate: null,
-        icon: null
+        targetDate: null
       })
     )
 
@@ -550,8 +582,7 @@ describe('linear.agentProjectEdit params', () => {
       content: null,
       lead: null,
       startDate: null,
-      targetDate: null,
-      icon: null
+      targetDate: null
     })
   })
 

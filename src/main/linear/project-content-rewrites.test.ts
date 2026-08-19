@@ -83,4 +83,23 @@ describe('Linear project content rewrites', () => {
     const once = canonicalizeLinearProjectContent(stored)
     expect(canonicalizeLinearProjectContent(once)).toBe(once)
   })
+
+  // Why: an earlier fix bounded the label match to keep the scan fast, which broke
+  // convergence for any URL past that bound. The scan is linear-time now, so no
+  // length should matter — prove it well past that old bound.
+  it('round-trips a bare URL far longer than any earlier length bound', () => {
+    const longUrl = `${COMMIT_URL}?ref=${'a'.repeat(2000)}`
+    const sent = `see ${longUrl} end`
+    const stored = `see [${longUrl}](<${longUrl}>) end`
+    expect(sameLinearProjectContent(sent, stored)).toBe(true)
+  })
+
+  // Why: a backtracking regex over unmatched delimiters is quadratic; a linear
+  // scan stays fast regardless of how many opens never close.
+  it('canonicalizes many unmatched delimiters in linear time', () => {
+    const adversarial = '[a('.repeat(20000) + '<b '.repeat(20000)
+    const start = performance.now()
+    canonicalizeLinearProjectContent(adversarial)
+    expect(performance.now() - start).toBeLessThan(200)
+  })
 })
