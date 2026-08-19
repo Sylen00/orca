@@ -566,4 +566,27 @@ describe('remote desktop viewer width driver', () => {
     expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
     expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
   })
+
+  it('take-back during the resubscribe grace still resizes the PTY off the phone grid', async () => {
+    // Why: both take-back tests above force the resize to fail, so nothing pinned that a
+    // converging remote reclaim reaches the host. A phone that unsubscribes cleanly holds
+    // driver=mobile for the 250ms resubscribe grace, and applyRemoteDesktopLayout no-ops on
+    // a mobile driver — so without the idle flip the lock drops and `true` is still reported
+    // while the PTY stays stranded at the phone grid.
+    const { runtime, resizeCalls } = createRuntime(null)
+    await runtime.updateRemoteDesktopViewer('pty-1', 'sub-A', 'viewer-A', 100, 30)
+    await runtime.handleMobileSubscribe('pty-1', 'phone-A', { cols: 45, rows: 20 })
+    runtime.handleMobileUnsubscribe('pty-1', 'phone-A')
+    // Inside the grace window on purpose: the driver still reads mobile here.
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'mobile', clientId: 'phone-A' })
+    expect(runtime.getTerminalFitOverride('pty-1')).toMatchObject({ mode: 'mobile-fit' })
+    const resizesBefore = resizeCalls.length
+
+    await expect(runtime.reclaimTerminalForDesktop('pty-1')).resolves.toBe(true)
+
+    expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
+    expect(resizeCalls.slice(resizesBefore)).toContainEqual({ ptyId: 'pty-1', cols: 100, rows: 30 })
+    expect(runtime.getTerminalSize('pty-1')).toEqual({ cols: 100, rows: 30 })
+  })
 })
