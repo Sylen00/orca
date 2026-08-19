@@ -3,6 +3,7 @@ import type * as NodeFs from 'node:fs'
 import type * as NodeOs from 'node:os'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { CodexTrustEntry } from './config-toml-trust'
 
 // STA-4823: six shared Codex state files were rebuilt, erased or reported as
 // healthy after a read that had merely failed. Every one is reachable on the
@@ -124,7 +125,8 @@ vi.mock('node:os', async () => {
 
 const realFs = await vi.importActual<typeof NodeFs>('node:fs')
 
-const { upsertHookTrustEntries, readHookTrustEntries } = await import('./config-toml-trust')
+const { upsertHookTrustEntries, upsertProjectTrustLevel, readHookTrustEntries } =
+  await import('./config-toml-trust')
 const {
   writeCodexTrustGrantLedgerHome,
   readCodexTrustGrantLedgerHome,
@@ -190,11 +192,12 @@ describe('STA-4823 D29 — an unreadable config.toml must not become a trust-onl
       sourcePath: '/tmp/hooks.json',
       eventLabel: 'stop',
       groupIndex: 0,
-      hookIndex: 0,
+      handlerIndex: 0,
+      command: 'orca hook',
       trustedHash: 'sha256:x',
       enabled: true
     }
-  ]
+  ] satisfies readonly CodexTrustEntry[]
 
   it('refuses the write rather than rebuilding the file from the trust entries alone', () => {
     const configPath = join(runtimeHomePath, 'config.toml')
@@ -203,7 +206,7 @@ describe('STA-4823 D29 — an unreadable config.toml must not become a trust-onl
 
     // Every hook-service caller already turns this throw into "trust entries
     // could not be written. Run /hooks in Codex to approve."
-    expect(() => upsertHookTrustEntries(configPath, ENTRY as never)).toThrow('EPERM')
+    expect(() => upsertHookTrustEntries(configPath, ENTRY)).toThrow('EPERM')
 
     // Before the fix, existsSync said the file was gone, `existing` became '',
     // and the upsert wrote a config containing ONLY the trust table — the
@@ -216,9 +219,26 @@ describe('STA-4823 D29 — an unreadable config.toml must not become a trust-onl
 
     // Why: seeding from empty is correct for a genuine absence, and is how a
     // fresh managed home gets its trust entries at all.
-    upsertHookTrustEntries(configPath, ENTRY as never)
+    upsertHookTrustEntries(configPath, ENTRY)
 
     expect(readHookTrustEntries(configPath).size).toBeGreaterThan(0)
+  })
+
+  it('also refuses a project-trust write when the existing config cannot be read', () => {
+    const configPath = join(runtimeHomePath, 'config.toml')
+    realFs.writeFileSync(configPath, USER_CONFIG, 'utf-8')
+    denials.denyExistence(configPath)
+
+    expect(() => upsertProjectTrustLevel(configPath, '/tmp/project', 'trusted')).toThrow('EPERM')
+    expect(realFs.readFileSync(configPath, 'utf-8')).toBe(USER_CONFIG)
+  })
+
+  it('still seeds project trust when config.toml is genuinely absent', () => {
+    const configPath = join(runtimeHomePath, 'config.toml')
+
+    upsertProjectTrustLevel(configPath, '/tmp/project', 'trusted')
+
+    expect(realFs.readFileSync(configPath, 'utf-8')).toContain('trust_level = "trusted"')
   })
 })
 
@@ -327,6 +347,15 @@ describe('STA-4823 D26 — an unreadable settings baseline must not be overwritt
     // anchor still means something when the fix is reverted.
     expect(JSON.parse(realFs.readFileSync(baselinePath(), 'utf-8'))).toMatchObject({ version: 2 })
   })
+
+  it('still replaces a fully-read baseline rejected by the JSON structure limit', () => {
+    realFs.writeFileSync(baselinePath(), '['.repeat(129), 'utf-8')
+    realFs.writeFileSync(join(runtimeHomePath, 'config.toml'), 'model = "m"\n', 'utf-8')
+
+    snapshotCodexRuntimeSettingsBaseline(runtimeHomePath)
+
+    expect(JSON.parse(realFs.readFileSync(baselinePath(), 'utf-8'))).toMatchObject({ version: 2 })
+  })
 })
 
 describe('STA-4823 D15 — the sync status must not report synced while the mirror refuses', () => {
@@ -342,6 +371,17 @@ describe('STA-4823 D15 — the sync status must not report synced while the mirr
     // and this returned `synced` — telling the user their edits had been
     // applied while nothing had run.
     expect(status).toMatchObject({ state: 'stalled', reason: 'managed-home-unavailable' })
+  })
+
+  it('reports the managed home as unavailable when only its content read is denied', () => {
+    const runtimeConfigPath = join(runtimeHomePath, 'config.toml')
+    realFs.writeFileSync(runtimeConfigPath, 'model = "m"\n', 'utf-8')
+    realFs.writeFileSync(join(systemHome(), 'config.toml'), 'model = "s"\n', 'utf-8')
+    denials.denyReads(runtimeConfigPath)
+
+    expect(
+      getCodexConfigSyncStatus({ runtimeHomePath, systemHomePath: systemHome() })
+    ).toMatchObject({ state: 'stalled', reason: 'managed-home-unavailable' })
   })
 
   it('still reports synced when no runtime config exists yet', () => {

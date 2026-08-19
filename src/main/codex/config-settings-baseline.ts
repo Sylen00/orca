@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { isDefinitiveAbsence } from '../../shared/definitive-filesystem-absence'
+import { JsonTextStructureCapacityError } from '../../shared/json-text-structure-limit'
 import { join } from 'node:path'
 import { readAgentStateFileSync, readAgentStateJsonFileSync } from '../agent-state-file-reader'
 
@@ -82,9 +83,9 @@ function readParsedCodexSettingsBaseline(
   }
 }
 
-/** Why: `readAgentStateJsonFileSync` throws for a parse failure and for a size cap alike. */
+/** Why: a fully read baseline that exceeds JSON structure limits is corrupt state, not a failed read. */
 function isMalformedBaselineError(error: unknown): boolean {
-  return error instanceof SyntaxError
+  return error instanceof SyntaxError || error instanceof JsonTextStructureCapacityError
 }
 
 export function writeCodexSettingsBaseline(

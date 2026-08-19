@@ -383,7 +383,11 @@ export function upsertProjectTrustLevel(
   projectPath: string,
   trustLevel: CodexProjectTrustLevel
 ): void {
-  const existing = existsSync(configPath) ? readTomlFile(configPath) : ''
+  const observation = observe(() => readTomlFile(configPath))
+  if (observation.kind === 'indeterminate') {
+    throw observation.error
+  }
+  const existing = observation.kind === 'present' ? observation.value : ''
   const updated = upsertProjectTrustLevelInContent(existing, projectPath, trustLevel)
   if (updated === existing) {
     return

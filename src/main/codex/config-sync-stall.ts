@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { observeAgentStateFile, observeResolvedPathEntry } from './codex-path-observation'
+import { observeAgentStateFile } from './codex-path-observation'
 import { getOrcaManagedCodexHomePath, getSystemCodexHomePath } from './codex-home-paths'
 import type { CodexSettingsPromotionHomes } from './config-settings-promotion'
 import type {
@@ -30,7 +30,7 @@ export function getCodexConfigSyncStatus(
   // But `existsSync` said "no runtime config" for one that was merely locked,
   // and this function then reported `synced` while the mirror was refusing —
   // telling the user their edits had been applied when nothing had run.
-  const runtimeConfigObservation = observeResolvedPathEntry(runtimeConfigPath)
+  const runtimeConfigObservation = observeAgentStateFile(runtimeConfigPath)
   if (runtimeConfigObservation.kind === 'absent') {
     return { state: 'synced', reason: null, systemConfigPath }
   }
