@@ -58,7 +58,8 @@ describe('activating a workspace whose last terminal was closed', () => {
   })
 
   // Why: entry points disagree about whether to pass a host for the same local workspace — the
-  // sidebar derives 'local', the Cmd+J palette passes nothing — so re-seeding must not depend on it.
+  // sidebar derives 'local', the Cmd+J palette passes nothing. Re-seeding no longer reads the
+  // host at all; this guards against reintroducing a host-sensitive carve-out.
   it('re-seeds identically whether or not the caller passes an execution host', () => {
     for (const opts of [{}, { executionHostId: 'local' as const }]) {
       const worktree = makeWorktree()
@@ -87,8 +88,8 @@ describe('activating a workspace whose last terminal was closed', () => {
     expect(useAppStore.getState().tabsByWorktree[worktree.id]).toEqual([])
   })
 
-  // Why: the tombstone only suppresses a terminal — an editor/browser-only workspace is already
-  // renderable, so activation must not hand it an unwanted extra tab.
+  // Why: this passes ahead of the tombstone check — a renderable browser tab short-circuits
+  // `shouldAutoCreateInitialTerminal` — so it guards `renderableTabCount`, not the re-seed flag.
   it('does not add a terminal to a workspace that still renders a browser tab', () => {
     const worktree = makeWorktree()
     seedEmptyActivatableWorktree(worktree)
