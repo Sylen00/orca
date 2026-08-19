@@ -28,6 +28,9 @@ export type SubscribeNativeChatTranscriptArgs = ResolveSessionFileOptions & {
   debounceMs?: number
   /** Test-only override for the production resolve-poll backoff. */
   resolvePollIntervalMs?: number
+  /** Test-only override for how long an unresolved transcript stays silent
+   *  before the first "unavailable" snapshot. */
+  unresolvedNoticeMs?: number
   /** Test-only override for the host-side watcher reconciliation interval. */
   reconciliationIntervalMs?: number
 }

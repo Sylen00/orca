@@ -49,6 +49,16 @@ async function attemptInstall(
 const INITIAL_RESOLVE_POLL_MS = 500
 const MAX_RESOLVE_POLL_MS = 5_000
 const FALLBACK_RESOLVE_POLL_MS = 5_000
+// Why: a transcript this host can never open (the agent runs on an SSH remote,
+// so the file is on that machine — #13663) is indistinguishable here from one
+// that simply has not flushed yet, and both poll forever. Past this deadline
+// say so instead of spinning silently. Deliberately longer than the observed
+// worst-case first flush (#8401): the notice is non-terminal, so paying a
+// generous wait costs a late message, while being too eager costs a false one
+// on a healthy session.
+const UNRESOLVED_NOTICE_MS = 60_000
+const UNRESOLVED_TRANSCRIPT_MESSAGE =
+  'Transcript unavailable on this host. If this agent runs on a remote machine, its transcript lives there.'
 
 function exactTranscriptPath(args: SubscribeNativeChatTranscriptArgs): string | null {
   const path = args.transcriptPath?.trim()
@@ -81,7 +91,22 @@ function subscribeViaResolvePoll(
   // Latches only once a frame was actually emitted, so a subscriber without the
   // callback can't suppress it for a later one.
   let gateErrorEmitted = false
+  const startedAt = Date.now()
+  const unresolvedNoticeMs = args.unresolvedNoticeMs ?? UNRESOLVED_NOTICE_MS
   const resolveController = new AbortController()
+
+  /** Non-terminal: the poll keeps running and a later real snapshot replaces
+   *  this, so a slow-to-flush session still recovers (#8401). */
+  function emitUnresolvedNotice(): void {
+    if (gateErrorEmitted || !args.onInitialSnapshot) {
+      return
+    }
+    if (Date.now() - startedAt < unresolvedNoticeMs) {
+      return
+    }
+    gateErrorEmitted = true
+    args.onInitialSnapshot([], false, 0, UNRESOLVED_TRANSCRIPT_MESSAGE)
+  }
 
   function scheduleAttempt(): void {
     if (closed) {
@@ -167,6 +192,7 @@ function subscribeViaResolvePoll(
       installed = result
       return
     }
+    emitUnresolvedNotice()
     scheduleAttempt()
   }
 
