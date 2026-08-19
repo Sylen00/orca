@@ -45,8 +45,7 @@ export type ActivateAndRevealResult = {
 
 function ensureFolderWorkspaceInitialTerminal(
   folderWorkspace: FolderWorkspace,
-  startup?: WorktreeStartupPayload,
-  reseedEmptiedWorkspace = false
+  startup?: WorktreeStartupPayload
 ): string | null {
   const state = useAppStore.getState()
   const workspaceKey = folderWorkspaceKey(folderWorkspace.id)
@@ -57,7 +56,7 @@ function ensureFolderWorkspaceInitialTerminal(
     undefined,
     undefined,
     undefined,
-    reseedEmptiedWorkspace ? { reseedEmptiedWorkspace: true } : undefined
+    { reseedEmptiedWorkspace: true }
   )
   return primaryTabId
 }
@@ -107,16 +106,6 @@ export function activateAndRevealFolderWorkspace(
     return false
   }
 
-  // Why: a plain reselect of the workspace you are already looking at must not undo
-  // closing its last terminal; every other activation re-seeds one. The host must match
-  // too — one folder id resolves to a different workspace per host while sharing one
-  // `tabsByWorktree` row, so a cross-host open is a real activation, not a reselect.
-  const isPlainAlreadyActiveTerminal =
-    !opts?.startup &&
-    state.activeWorktreeId === folderWorkspaceKey(folderWorkspaceId) &&
-    state.activeWorkspaceExecutionHostId === (opts?.executionHostId ?? null) &&
-    state.activeView === 'terminal'
-
   if (state.activeView !== 'terminal') {
     state.setActiveView('terminal')
   }
@@ -129,11 +118,7 @@ export function activateAndRevealFolderWorkspace(
     state.recordWorktreeVisit(workspaceKey)
   }
   resumeSleepingAgentSessionsForWorktree(workspaceKey)
-  const primaryTabId = ensureFolderWorkspaceInitialTerminal(
-    folderWorkspace,
-    opts?.startup,
-    !isPlainAlreadyActiveTerminal
-  )
+  const primaryTabId = ensureFolderWorkspaceInitialTerminal(folderWorkspace, opts?.startup)
 
   if (opts?.sidebarRevealBehavior) {
     state.revealWorktreeInSidebar(workspaceKey, { behavior: opts.sidebarRevealBehavior })
@@ -220,7 +205,7 @@ export function activateAndRevealWorktree(
     opts?.defaultTabs,
     {
       ...(opts?.backendStartupTerminalSpawned ? { backendStartupTerminalSpawned: true } : {}),
-      ...(isPlainAlreadyActiveTerminal ? {} : { reseedEmptiedWorkspace: true })
+      reseedEmptiedWorkspace: true
     }
   )
   if (primaryTabId && opts?.initialCwd) {
