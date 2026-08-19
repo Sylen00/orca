@@ -79,6 +79,19 @@ describe('worktree visibility sources', () => {
     }
   })
 
+  it('keeps sibling scratch under a built-in root a nested base does not contain', () => {
+    const classify = createWorktreeVisibilitySourceMatcher(
+      ['/repo'],
+      [],
+      ['/repo/.claude/worktrees/OrbisCXM']
+    )
+    expect(classify('/repo/.claude/worktrees/Other/agent-1')).toEqual({
+      kind: 'built-in',
+      id: 'claude'
+    })
+    expect(classify('/repo/.claude/worktrees/OrbisCXM/agent-1')).toBeNull()
+  })
+
   it('lets a custom source claim a configured base the built-in released', () => {
     const classify = createWorktreeVisibilitySourceMatcher(
       ['/repo'],

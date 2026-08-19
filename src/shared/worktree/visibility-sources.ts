@@ -129,6 +129,11 @@ function createDescendantMatcher(rootPath: string): (normalizedCandidate: string
     normalizedCandidate !== normalizedRoot && matchesInsideOrEqual(normalizedCandidate)
 }
 
+/**
+ * Precondition: `configuredWorktreeBasePaths` are already resolved and free of
+ * `.`/`..` segments — pass them through `resolveConfiguredWorktreeBasePaths`,
+ * since a raw `.claude/worktrees/.` compares unequal and would not supersede.
+ */
 export function createWorktreeVisibilitySourceMatcher(
   checkoutPaths: readonly string[],
   customSources: readonly CustomWorktreeVisibilitySource[] = [],
