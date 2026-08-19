@@ -142,6 +142,10 @@ export function activateAndRevealWorktree(
     revealInSidebar?: boolean
     executionHostId?: ExecutionHostId
     backendStartupTerminalSpawned?: boolean
+    /** Set by callers that navigate here only to open their own non-terminal surface
+     *  (an editor file, a diff). Activation then leaves a closed-last-terminal workspace
+     *  empty instead of adding a shell the user never asked for. */
+    providesInitialSurface?: boolean
   }
 ): ActivateAndRevealResult | false {
   const state = useAppStore.getState()
@@ -205,7 +209,7 @@ export function activateAndRevealWorktree(
     opts?.defaultTabs,
     {
       ...(opts?.backendStartupTerminalSpawned ? { backendStartupTerminalSpawned: true } : {}),
-      reseedEmptiedWorkspace: true
+      reseedEmptiedWorkspace: opts?.providesInitialSurface !== true
     }
   )
   if (primaryTabId && opts?.initialCwd) {

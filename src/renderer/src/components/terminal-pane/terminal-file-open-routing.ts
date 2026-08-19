@@ -211,7 +211,9 @@ export function openDetectedFilePath(
       // Why: terminal file links can jump across worktrees. Reusing the shared
       // activation path keeps those jumps in the same history stack as sidebar
       // and palette navigation before the editor opens the destination file.
-      activateAndRevealWorktree(worktreeId)
+      // Why: this jump exists to show a file; seeding a shell into a workspace whose last
+      // terminal the user closed would add a PTY they never asked for.
+      activateAndRevealWorktree(worktreeId, { providesInitialSurface: true })
     }
 
     const language = detectLanguage(mappedFilePath)

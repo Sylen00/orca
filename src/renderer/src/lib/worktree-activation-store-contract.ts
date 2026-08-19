@@ -65,7 +65,8 @@ export type InitialTerminalOptions = {
   backendStartupTerminalSpawned?: boolean
   /** Why: an explicit empty terminal row is a "user closed the last tab" tombstone that
    *  startup hydration must honour, but opening the workspace on purpose (sidebar, palette,
-   *  automation "Resume workspace", wake) has to hand back a usable surface. Every
-   *  `activateAndReveal*` caller sets this; only the hydration path leaves it unset. */
+   *  automation "Resume workspace", wake) has to hand back a usable surface. Activation sets
+   *  it unless the caller says it provides its own surface; startup hydration and background
+   *  worktree creation leave it unset, and both reach the ordinary auto-create path instead. */
   reseedEmptiedWorkspace?: boolean
 }

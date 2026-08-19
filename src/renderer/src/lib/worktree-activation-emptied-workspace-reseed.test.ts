@@ -77,6 +77,24 @@ describe('activating a workspace whose last terminal was closed', () => {
     }
   })
 
+  // Why: terminal file links and check annotations activate only to route history before they
+  // open an editor tab. Seeding there hands the user a shell they never asked for and erases the
+  // tombstone permanently. See terminal-file-open-routing.ts and check-annotation-open.ts.
+  it('leaves the row empty when the caller opens its own surface', () => {
+    const worktree = makeWorktree()
+    seedEmptyActivatableWorktree(worktree)
+    seedClosedLastTerminal(worktree.id)
+
+    const result = activateAndRevealWorktree(worktree.id, {
+      providesInitialSurface: true,
+      notifyHostRuntime: false
+    })
+
+    expect(result).not.toBe(false)
+    expect(result === false ? null : result.primaryTabId).toBeNull()
+    expect(useAppStore.getState().tabsByWorktree[worktree.id]).toEqual([])
+  })
+
   it('leaves the row empty for startup hydration, which never opts into re-seeding', () => {
     const worktree = makeWorktree()
     seedEmptyActivatableWorktree(worktree)
