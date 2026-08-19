@@ -4343,6 +4343,59 @@ export function connectPanePty(
     forwardPtyResize(cols, rows)
   })
 
+  // Why (#14321): the host resizes the PTY back to desktop dims and only then
+  // tells the renderer the hold is released, so an alt-screen TUI's SIGWINCH
+  // redraw (measured 0.4-8ms) is parsed while xterm is still parked at phone
+  // dims — a frame before the release refit lands. Alt screens never reflow, so
+  // that frame is stale until something makes the TUI redraw; the renderer's own
+  // corrective pty:resize cannot, because the phone->desktop layout arms a 500ms
+  // suppress window over it. Re-signal once the restored grid is in place.
+  let heldMobileFitPtyId: string | null = null
+  let mobileFitReleaseRepaintFit: SafeFitContinuationHandle | null = null
+  const unsubscribeMobileFitReleaseRepaint = onOverrideChange((event) => {
+    if (event.ptyId !== transport.getPtyId()) {
+      return
+    }
+    if (event.mode === 'mobile-fit') {
+      heldMobileFitPtyId = event.ptyId
+      return
+    }
+    // Why only mobile-fit: a remote-desktop-fit hand-off keeps another desktop
+    // authoritative for the grid, and its own viewport claim owns the repaint.
+    if (event.mode !== 'desktop-fit' || heldMobileFitPtyId !== event.ptyId) {
+      return
+    }
+    const releasedPtyId = event.ptyId
+    heldMobileFitPtyId = null
+    const isCurrentRelease = (): boolean =>
+      !disposed && transport.getPtyId() === releasedPtyId && !getFitOverrideForPty(releasedPtyId)
+    mobileFitReleaseRepaintFit?.cancel()
+    mobileFitReleaseRepaintFit = safeFitAndThen(
+      pane,
+      'mobile-fit-release-repaint',
+      () => {
+        mobileFitReleaseRepaintFit = null
+        // Why not a resize: the PTY is already at desktop dims, so POSIX sends
+        // no SIGWINCH of its own; signalling explicitly also skips the host's
+        // resize-suppress window instead of being dropped by it.
+        if (
+          isCurrentRelease() &&
+          deps.isVisibleRef.current &&
+          !isRemoteRuntimePtyId(releasedPtyId)
+        ) {
+          window.api.pty.signal(releasedPtyId, 'SIGWINCH')
+        }
+      },
+      {
+        shouldContinue: isCurrentRelease,
+        retryIfUnmeasurable: true,
+        // Why: a hidden pane repaints on reveal, where its grid is measurable
+        // and the redraw is not filed as stale background output.
+        deferIfHidden: true
+      }
+    )
+  })
+
   // Why: renderer resize forwarding is fire-and-forget. A visible pane can
   // finish with xterm at the right grid while the PTY silently kept an older
   // grid, so Codex keeps composing against stale columns. Fit first so xterm's
@@ -9494,6 +9547,9 @@ export function connectPanePty(
       terminalRecoveryInstance.unregister()
       unregisterUndeliverableWriteHandler()
       unsubscribeRemoteDesktopActivationClaim()
+      unsubscribeMobileFitReleaseRepaint()
+      mobileFitReleaseRepaintFit?.cancel()
+      mobileFitReleaseRepaintFit = null
       cancelHiddenOutputSnapshotScrollRestore()
       liveScrollbackRestore?.dispose()
       liveScrollbackRestore = null
