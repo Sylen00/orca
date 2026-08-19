@@ -112,9 +112,13 @@ export function ensureWorktreeHasInitialTerminal(
   }
 
   const hasExplicitLaunchWork = Boolean(sequencedStartup || setup || issueCommand)
+  // Why: only startup hydration honours the closed-last-tab tombstone; an explicit
+  // activation (sidebar, palette, automation resume, wake) must re-seed a surface.
+  const hasClosedTerminalTombstone =
+    Object.hasOwn(store.tabsByWorktree, worktreeId) && opts?.reseedEmptiedWorkspace !== true
   const shouldAutoCreate = shouldAutoCreateInitialTerminal(
     renderableTabCount,
-    Object.hasOwn(store.tabsByWorktree, worktreeId)
+    hasClosedTerminalTombstone
   )
   const shouldCreateForExplicitWork = renderableTabCount === 0 && hasExplicitLaunchWork
   if (!shouldAutoCreate && !shouldCreateForExplicitWork) {

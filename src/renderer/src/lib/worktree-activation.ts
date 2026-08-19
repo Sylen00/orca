@@ -45,7 +45,8 @@ export type ActivateAndRevealResult = {
 
 function ensureFolderWorkspaceInitialTerminal(
   folderWorkspace: FolderWorkspace,
-  startup?: WorktreeStartupPayload
+  startup?: WorktreeStartupPayload,
+  reseedEmptiedWorkspace = false
 ): string | null {
   const state = useAppStore.getState()
   const workspaceKey = folderWorkspaceKey(folderWorkspace.id)
@@ -55,7 +56,8 @@ function ensureFolderWorkspaceInitialTerminal(
     startup,
     undefined,
     undefined,
-    undefined
+    undefined,
+    reseedEmptiedWorkspace ? { reseedEmptiedWorkspace: true } : undefined
   )
   return primaryTabId
 }
@@ -105,6 +107,13 @@ export function activateAndRevealFolderWorkspace(
     return false
   }
 
+  // Why: a plain reselect of the workspace you are already looking at must not undo
+  // closing its last terminal; every other activation re-seeds one.
+  const isPlainAlreadyActiveTerminal =
+    !opts?.startup &&
+    state.activeWorktreeId === folderWorkspaceKey(folderWorkspaceId) &&
+    state.activeView === 'terminal'
+
   if (state.activeView !== 'terminal') {
     state.setActiveView('terminal')
   }
@@ -117,7 +126,11 @@ export function activateAndRevealFolderWorkspace(
     state.recordWorktreeVisit(workspaceKey)
   }
   resumeSleepingAgentSessionsForWorktree(workspaceKey)
-  const primaryTabId = ensureFolderWorkspaceInitialTerminal(folderWorkspace, opts?.startup)
+  const primaryTabId = ensureFolderWorkspaceInitialTerminal(
+    folderWorkspace,
+    opts?.startup,
+    !isPlainAlreadyActiveTerminal
+  )
 
   if (opts?.sidebarRevealBehavior) {
     state.revealWorktreeInSidebar(workspaceKey, { behavior: opts.sidebarRevealBehavior })
@@ -202,7 +215,10 @@ export function activateAndRevealWorktree(
     opts?.setup,
     opts?.issueCommand,
     opts?.defaultTabs,
-    opts?.backendStartupTerminalSpawned ? { backendStartupTerminalSpawned: true } : undefined
+    {
+      ...(opts?.backendStartupTerminalSpawned ? { backendStartupTerminalSpawned: true } : {}),
+      ...(isPlainAlreadyActiveTerminal ? {} : { reseedEmptiedWorkspace: true })
+    }
   )
   if (primaryTabId && opts?.initialCwd) {
     useAppStore.getState().queueTabInitialCwd(primaryTabId, opts.initialCwd)

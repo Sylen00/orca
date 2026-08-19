@@ -63,4 +63,8 @@ export type WorktreeActivationStore = Partial<WorktreeRuntimeOwnerState> & {
 export type InitialTerminalOptions = {
   activateCreatedTabs?: boolean
   backendStartupTerminalSpawned?: boolean
+  /** Why: an explicit empty terminal row is a "user closed the last tab" tombstone that
+   *  startup hydration must honour, but opening the workspace on purpose (sidebar, palette,
+   *  automation "Resume workspace", wake) has to hand back a usable surface. */
+  reseedEmptiedWorkspace?: boolean
 }
