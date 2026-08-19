@@ -107,8 +107,9 @@ describe('terminal.subscribe teardown ownership', () => {
     expect(runtime.handleMobileUnsubscribe).toHaveBeenCalledWith('pty-1', 'phone-1')
   })
 
-  // T4(c): a genuine terminal-gone rejection still tears down.
-  it('tears down the current owner when the terminal handle goes stale', async () => {
+  // T4(c): a stale handle is graph churn (renderer reload, window close), not an exit — the
+  // stream must survive it and re-arm so a later real exit is still observed.
+  it('keeps the current owner when the terminal handle goes momentarily stale', async () => {
     const registry = createSubscriptionRegistryDouble()
     const waiters: Waiter[] = []
     const runtime = stubRuntime(registry, waiters)
@@ -118,6 +119,23 @@ describe('terminal.subscribe teardown ownership', () => {
     await vi.waitFor(() => expect(waiters).toHaveLength(1))
 
     waiters[0]!.reject(new Error('terminal_handle_stale'))
+    await flush()
+
+    expect(registry.peekCleanup(SUBSCRIPTION_ID)).toBeDefined()
+    await vi.waitFor(() => expect(waiters).toHaveLength(2))
+  })
+
+  // T4(d): a genuine exit still tears down the current owner.
+  it('tears down the current owner when the terminal exits', async () => {
+    const registry = createSubscriptionRegistryDouble()
+    const waiters: Waiter[] = []
+    const runtime = stubRuntime(registry, waiters)
+    const dispatcher = new RpcDispatcher({ runtime, methods: TERMINAL_METHODS })
+
+    void dispatcher.dispatchStreaming(makeRequest(binaryParams), vi.fn(), streamOptions('conn-a'))
+    await vi.waitFor(() => expect(waiters).toHaveLength(1))
+
+    waiters[0]!.resolve({ handle: 'terminal-1', condition: 'exit' } as RuntimeTerminalWait)
     await flush()
 
     expect(registry.peekCleanup(SUBSCRIPTION_ID)).toBeUndefined()

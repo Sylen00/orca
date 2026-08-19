@@ -74,6 +74,7 @@ import {
 import type { TerminalSnapshotUnavailableReason } from '../../../../shared/terminal-snapshot-unavailability'
 import type { RemoteTerminalSourceRangeReplacementReservation } from '../../remote-terminal-source-range-consumer'
 import { withTerminalCloseAttribution } from '../terminal-close-attribution'
+import { releaseSubscriptionOnTerminalExit } from './terminal-subscription-exit-release'
 
 const REQUESTED_SNAPSHOT_BYTE_BUDGET = 2 * 1024 * 1024
 const TERMINAL_OUTPUT_FLUSH_MS = 5
@@ -2963,10 +2964,12 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           resolveStream = resolve
         })
         const subscriptionId = `${params.terminal}:${clientId}`
+        let stopExitWaiter = (): void => {}
         // Why: chat needs the input-floor ack without registering a view subscriber or transporting duplicate PTY output.
         const registration = runtime.registerOwnedSubscriptionCleanup(
           subscriptionId,
           () => {
+            stopExitWaiter()
             closed = true
             runtime.handleMobileUnsubscribe(ptyId, clientId)
             emit({ type: 'end' })
@@ -2974,10 +2977,12 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           },
           connectionId
         )
-        void runtime
-          .waitForTerminal(params.terminal, { condition: 'exit', signal })
-          .then(() => registration.releaseIfCurrent())
-          .catch(() => registration.releaseIfCurrent())
+        stopExitWaiter = releaseSubscriptionOnTerminalExit({
+          runtime,
+          terminal: params.terminal,
+          signal,
+          release: () => registration.releaseIfCurrent()
+        })
         try {
           // Why: a lease-only subscriber has no terminal view, so its cached viewport must never phone-fit the PTY.
           await runtime.handleMobileSubscribe(ptyId, clientId, undefined)
@@ -3016,10 +3021,12 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
         const streamClosed = new Promise<void>((resolve) => {
           resolveStream = resolve
         })
+        let stopExitWaiter = (): void => {}
         // Why: register before viewport/snapshot awaits so a socket close can't orphan the stream listeners or its remote-desktop width floor.
         const registration = runtime.registerOwnedSubscriptionCleanup(
           subscriptionId,
           () => {
+            stopExitWaiter()
             closed = true
             outputBatcher?.flush()
             outputBatcher?.dispose()
@@ -3101,10 +3108,12 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
             })
           })
           // Why: bind the exit-waiter to the connection signal so socket close/error removes it instead of leaking until real exit.
-          void runtime
-            .waitForTerminal(params.terminal, { condition: 'exit', signal })
-            .then(() => registration.releaseIfCurrent())
-            .catch(() => registration.releaseIfCurrent())
+          stopExitWaiter = releaseSubscriptionOnTerminalExit({
+            runtime,
+            terminal: params.terminal,
+            signal,
+            release: () => registration.releaseIfCurrent()
+          })
           await streamClosed
         } catch (error) {
           registration.releaseIfCurrent()
@@ -3143,9 +3152,11 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
       })
       // Why: register cleanup before any await so a mid-subscribe disconnect still removes mobile presence; client-scoped ids also allow parallel desktop subscribers.
       const subscriptionId = clientId ? `${params.terminal}:${clientId}` : params.terminal
+      let stopExitWaiter = (): void => {}
       const registration = runtime.registerOwnedSubscriptionCleanup(
         subscriptionId,
         () => {
+          stopExitWaiter()
           outputBatcher?.flush()
           outputBatcher?.dispose()
           closed = true
@@ -3167,10 +3178,12 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
       // Why: bind the exit-waiter to the connection signal so socket close/error removes it instead of leaking until real exit.
       // Why releaseIfCurrent: the signal aborts per socket, so after a reconnect rebinds
       // this id a keyed teardown here would kill the replacement stream (STA-4510).
-      void runtime
-        .waitForTerminal(params.terminal, { condition: 'exit', signal })
-        .then(() => registration.releaseIfCurrent())
-        .catch(() => registration.releaseIfCurrent())
+      stopExitWaiter = releaseSubscriptionOnTerminalExit({
+        runtime,
+        terminal: params.terminal,
+        signal,
+        release: () => registration.releaseIfCurrent()
+      })
       const sendFrame = (
         opcode: TerminalStreamOpcode,
         payload: Uint8Array<ArrayBufferLike> = new Uint8Array(),
