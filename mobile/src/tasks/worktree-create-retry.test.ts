@@ -1,24 +1,64 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { RpcClient } from '../transport/rpc-client'
+import { markRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
 import { LogicalClientCutoverError } from '../transport/stable-logical-rpc-client'
+import type { ConnectionState } from '../transport/types'
 import { createWorktreeWithNameRetry } from './worktree-create-retry'
 
 type Attempt = { method: string; params: Record<string, unknown> }
+
+// Drives the transport state a replay has to wait on. Production couples the two:
+// a socket close rejects the pending frame AND drops the client off 'connected'.
+function connectionController(): {
+  getState: () => ConnectionState
+  onStateChange: (listener: (state: ConnectionState) => void) => () => void
+  set: (next: ConnectionState) => void
+} {
+  let state: ConnectionState = 'connected'
+  const listeners = new Set<(next: ConnectionState) => void>()
+  return {
+    getState: () => state,
+    onStateChange: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    set: (next) => {
+      state = next
+      for (const listener of listeners) {
+        listener(next)
+      }
+    }
+  }
+}
+
+// Lets a parked replay reach its state wait before the test resumes the transport.
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
 
 // A client whose per-call outcome is scripted: return an id, a server error
 // message, or throw (transport-level rejection, e.g. a connection-migration
 // cutover). Records every call so tests can assert on the clientMutationId.
 function scriptedClient(
-  outcomes: Array<{ id: string } | { errorMessage: string } | { throws: unknown }>,
-  attempts: Attempt[]
+  outcomes: Array<
+    { id: string } | { errorMessage: string } | { throws: unknown; dropsConnection?: boolean }
+  >,
+  attempts: Attempt[],
+  connection?: ReturnType<typeof connectionController>
 ): RpcClient {
   let call = 0
   return {
+    getState: () => connection?.getState() ?? 'connected',
+    onStateChange: (listener: (state: ConnectionState) => void) =>
+      connection?.onStateChange(listener) ?? (() => {}),
     sendRequest: async (method: string, params?: unknown) => {
       attempts.push({ method, params: (params ?? {}) as Record<string, unknown> })
       const outcome = outcomes[Math.min(call, outcomes.length - 1)]!
       call += 1
       if ('throws' in outcome) {
+        if (outcome.dropsConnection) {
+          connection?.set('reconnecting')
+        }
         throw outcome.throws
       }
       if ('errorMessage' in outcome) {
@@ -187,5 +227,113 @@ describe('createWorktreeWithNameRetry', () => {
     ).rejects.toBeInstanceOf(LogicalClientCutoverError)
     expect(attempts).toHaveLength(1)
     expect(attempts[0]!.params.clientMutationId).toBeUndefined()
+  })
+
+  it('replays a delivery-ambiguous socket drop with the SAME key once the transport returns', async () => {
+    const attempts: Attempt[] = []
+    const connection = connectionController()
+    const client = scriptedClient(
+      [
+        {
+          throws: markRpcDeliveryUnknown(new Error('Connection interrupted')),
+          dropsConnection: true
+        },
+        { id: 'wt-drop' }
+      ],
+      attempts,
+      connection
+    )
+
+    const pending = createWorktreeWithNameRetry({
+      client,
+      baseName: 'urchin',
+      buildParams: (name) => ({ repo: 'id:r', name }),
+      supportsIdempotentCutoverRetry: true,
+      mintMutationId: () => 'key-drop'
+    })
+
+    await flush()
+    // Parked on the reconnect, not resent onto a dead socket.
+    expect(attempts).toHaveLength(1)
+
+    connection.set('connected')
+    await expect(pending).resolves.toEqual({ worktreeId: 'wt-drop', name: 'urchin' })
+    expect(attempts).toHaveLength(2)
+    // Idempotency: the host dedupes the replay against the create it may already
+    // have finished, instead of building a second worktree.
+    expect(attempts[1]!.params.clientMutationId).toBe('key-drop')
+    expect(attempts[1]!.params.name).toBe('urchin')
+  })
+
+  it('does not replay a delivery-ambiguous drop when the host lacks idempotency support', async () => {
+    const attempts: Attempt[] = []
+    const client = scriptedClient(
+      [{ throws: markRpcDeliveryUnknown(new Error('Connection interrupted')) }],
+      attempts
+    )
+    await expect(
+      createWorktreeWithNameRetry({
+        client,
+        baseName: 'limpet',
+        buildParams: (name) => ({ repo: 'id:r', name }),
+        supportsIdempotentCutoverRetry: false,
+        mintMutationId: () => 'must-not-be-used'
+      })
+    ).rejects.toThrow('Connection interrupted')
+    expect(attempts).toHaveLength(1)
+    expect(attempts[0]!.params.clientMutationId).toBeUndefined()
+  })
+
+  it('gives up after the delivery-ambiguity replay budget and rethrows', async () => {
+    const attempts: Attempt[] = []
+    const client = scriptedClient(
+      [{ throws: markRpcDeliveryUnknown(new Error('Connection interrupted')) }],
+      attempts
+    )
+    await expect(
+      createWorktreeWithNameRetry({
+        client,
+        baseName: 'barnacle',
+        buildParams: (name) => ({ repo: 'id:r', name }),
+        supportsIdempotentCutoverRetry: true,
+        mintMutationId: () => 'key-budget'
+      })
+    ).rejects.toThrow('Connection interrupted')
+    // Initial attempt + 2 replays; the window stays inside the host's post-success
+    // dedupe TTL so a replay can't outlive the record it is meant to match.
+    expect(attempts).toHaveLength(3)
+  })
+
+  it('surfaces the original ambiguity when the transport never comes back', async () => {
+    vi.useFakeTimers()
+    try {
+      const attempts: Attempt[] = []
+      const connection = connectionController()
+      const client = scriptedClient(
+        [
+          {
+            throws: markRpcDeliveryUnknown(new Error('Connection interrupted')),
+            dropsConnection: true
+          }
+        ],
+        attempts,
+        connection
+      )
+
+      const pending = createWorktreeWithNameRetry({
+        client,
+        baseName: 'anemone',
+        buildParams: (name) => ({ repo: 'id:r', name }),
+        supportsIdempotentCutoverRetry: true,
+        mintMutationId: () => 'key-stuck'
+      })
+      const settled = expect(pending).rejects.toThrow('Connection interrupted')
+      // A phone that never reconnects must not leave the Create spinner parked.
+      await vi.advanceTimersByTimeAsync(60_000)
+      await settled
+      expect(attempts).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

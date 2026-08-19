@@ -1,5 +1,7 @@
 import type { RpcClient } from '../transport/rpc-client'
 import type { RpcResponse, RpcSuccess } from '../transport/types'
+import { isRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
+import { waitForRpcClientReconnected } from '../transport/rpc-client-reconnect-wait'
 import { isLogicalClientCutoverError } from '../transport/stable-logical-rpc-client'
 import {
   CLIENT_WORKTREE_CREATE_MAX_ATTEMPTS,
@@ -23,6 +25,19 @@ export type WorktreeCreateResult = { worktreeId: string; name: string } | { erro
 // instead of surfacing "RPC interrupted by connection migration" with the
 // worktree silently created.
 const WORKTREE_CREATE_CUTOVER_MAX_RETRIES = 5
+
+// Why: a connection migration is not the only way a create goes delivery-ambiguous.
+// A plain socket close (cellular flap, relay drop, the phone backgrounding and the
+// supervisor suspending a billed relay splice) rejects the in-flight frame as
+// delivery-unknown with no generation bump, and create holds the longest budget of
+// any mobile RPC — 10 minutes of clone/fetch/setup — so it is the likeliest request
+// to be caught by one. Surfacing that as a failure is wrong: the host may well have
+// finished the worktree. Replay on the same clientMutationId instead.
+const WORKTREE_CREATE_AMBIGUOUS_MAX_RETRIES = 2
+// Why: the host drops a completed create's dedupe record 60s after it resolves, so
+// keep the whole replay window comfortably inside that or a replay lands as a fresh
+// create and suffixes a duplicate. An in-flight create is deduped without any TTL.
+const WORKTREE_CREATE_AMBIGUOUS_RECONNECT_WAIT_MS = 20_000
 
 export type CreateWorktreeWithNameRetryArgs = {
   client: RpcClient
@@ -78,28 +93,48 @@ export async function createWorktreeWithNameRetry(
   return { error: lastError ?? 'Failed to create workspace' }
 }
 
-// Sends worktree.create, re-issuing on a connection-migration cutover only. The
-// shared clientMutationId in `params` keeps the retry idempotent host-side.
+// Sends worktree.create, re-issuing whenever the request went delivery-ambiguous —
+// the frame reached the wire but no response came back, so the host may already have
+// built the worktree. The shared clientMutationId in `params` keeps the retry
+// idempotent host-side. A definite failure (never sent, or a server error response)
+// is returned to the caller untouched.
 async function sendWorktreeCreateResilient(
   client: RpcClient,
   params: Record<string, unknown>,
   supportsIdempotentCutoverRetry: boolean
 ): Promise<RpcResponse> {
-  for (let migrationRetry = 0; ; migrationRetry += 1) {
+  let migrationRetry = 0
+  let ambiguousRetry = 0
+  for (;;) {
     try {
       return await client.sendRequest('worktree.create', params, {
         timeoutMs: WORKTREE_CREATE_TIMEOUT_MS
       })
     } catch (error) {
+      if (!supportsIdempotentCutoverRetry) {
+        throw error
+      }
+      if (isLogicalClientCutoverError(error)) {
+        if (migrationRetry >= WORKTREE_CREATE_CUTOVER_MAX_RETRIES) {
+          throw error
+        }
+        migrationRetry += 1
+        // Why: LogicalClientCutoverError is raised only after migrateTo installs an
+        // authenticated replacement, so retry immediately instead of adding UI lag.
+        continue
+      }
+      if (!isRpcDeliveryUnknown(error) || ambiguousRetry >= WORKTREE_CREATE_AMBIGUOUS_MAX_RETRIES) {
+        throw error
+      }
+      ambiguousRetry += 1
+      // Why: unlike a cutover, no replacement session exists yet — resending now
+      // would just hit the dead one, so wait for the transport to come back and
+      // surface the original ambiguity if it does not.
       if (
-        !supportsIdempotentCutoverRetry ||
-        !isLogicalClientCutoverError(error) ||
-        migrationRetry >= WORKTREE_CREATE_CUTOVER_MAX_RETRIES
+        !(await waitForRpcClientReconnected(client, WORKTREE_CREATE_AMBIGUOUS_RECONNECT_WAIT_MS))
       ) {
         throw error
       }
-      // Why: LogicalClientCutoverError is raised only after migrateTo installs an
-      // authenticated replacement, so retry immediately instead of adding UI lag.
     }
   }
 }
