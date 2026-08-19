@@ -545,7 +545,7 @@ describe('remote desktop viewer width driver', () => {
     await expect(runtime.reclaimTerminalForDesktop('pty-1')).resolves.toBe(true)
 
     expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
-    expect(runtime.getDriver('pty-1').kind).not.toBe('mobile')
+    expect(runtime.getDriver('pty-1')).toEqual({ kind: 'desktop' })
     expect(fitOverrideEvents.slice(notifierBefore).some((e) => e.mode === 'desktop-fit')).toBe(true)
     // A second click must not be needed, and must stay idempotent.
     await expect(runtime.reclaimTerminalForDesktop('pty-1')).resolves.toBe(false)
