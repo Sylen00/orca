@@ -348,7 +348,9 @@ describe('createWorktreeWithNameRetry', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
+    // Generous: advanceTimersByTimeAsync yields through REAL macrotasks between ticks,
+    // so vitest's default 5s real-time budget is reachable on a loaded runner.
+  }, 30_000)
 
   it('surfaces the original ambiguity when the transport never comes back', async () => {
     vi.useFakeTimers()
@@ -381,7 +383,9 @@ describe('createWorktreeWithNameRetry', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
+    // Generous: advanceTimersByTimeAsync yields through REAL macrotasks between ticks,
+    // so vitest's default 5s real-time budget is reachable on a loaded runner.
+  }, 30_000)
 
   it('does not replay an ambiguity that surfaced while the transport stayed connected', async () => {
     vi.useFakeTimers()
@@ -421,7 +425,9 @@ describe('createWorktreeWithNameRetry', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
+    // Generous: advanceTimersByTimeAsync yields through REAL macrotasks between ticks,
+    // so vitest's default 5s real-time budget is reachable on a loaded runner.
+  }, 30_000)
 
   it('clamps a later reconnect wait to what is left of the replay window', async () => {
     vi.useFakeTimers()
@@ -468,7 +474,9 @@ describe('createWorktreeWithNameRetry', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
+    // Generous: advanceTimersByTimeAsync yields through REAL macrotasks between ticks,
+    // so vitest's default 5s real-time budget is reachable on a loaded runner.
+  }, 30_000)
 
   it('leaves room for watchdog detection inside the host dedupe TTL', () => {
     // Restates the budget from the watchdog's side: a half-open socket is only reported

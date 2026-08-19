@@ -7,13 +7,18 @@ import type { RpcClient } from './rpc-client'
 // request wait for the transport to come back first.
 //
 // Unlike waitForAuthenticated, intermediate 'disconnected'/'reconnecting' states are the
-// expected path here, not a failure — only the timeout ends the wait unsuccessfully.
+// expected path here, not a failure. Only a revoked pairing and the timeout end the wait
+// unsuccessfully.
 export function waitForRpcClientReconnected(
   client: RpcClient,
   timeoutMs: number
 ): Promise<boolean> {
-  if (client.getState() === 'connected') {
+  const state = client.getState()
+  if (state === 'connected') {
     return Promise.resolve(true)
+  }
+  if (state === 'auth-failed') {
+    return Promise.resolve(false)
   }
   return new Promise((resolve) => {
     let settled = false
@@ -24,6 +29,10 @@ export function waitForRpcClientReconnected(
     unsubscribe = client.onStateChange((state) => {
       if (state === 'connected') {
         finish(true)
+      } else if (state === 'auth-failed') {
+        // Revoked pairing never reaches 'connected', so waiting out the timeout only
+        // delays the error the caller is going to surface anyway.
+        finish(false)
       }
     })
     if (settled) {
