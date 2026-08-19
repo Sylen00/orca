@@ -12,6 +12,7 @@ import {
 import { basename, dirname, join, posix as pathPosix, win32 as pathWin32 } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { renameFileWithWindowsRetry } from '../codex-accounts/fs-utils'
+import { observe } from './codex-path-observation'
 import { foldWslUncPathCaseInsensitiveParts } from '../../shared/wsl-paths'
 import { writeRollingFileBackup } from '../rolling-file-backup'
 import {
@@ -337,7 +338,17 @@ export function upsertHookTrustEntries(
   configPath: string,
   entries: readonly CodexTrustEntry[]
 ): void {
-  const existing = existsSync(configPath) ? readTomlFile(configPath) : ''
+  // Why: `existsSync` answered `false` for a locked config exactly as for an
+  // absent one, so `existing` became '' and the upsert below rebuilt the file
+  // from the trust entries alone — replacing the user's model, provider, MCP
+  // servers, approvals and comments with a trust-only stub. Only a definitive
+  // absence may seed from empty; every caller in hook-service already turns a
+  // throw here into "trust entries could not be written. Run /hooks in Codex".
+  const observation = observe(() => readTomlFile(configPath))
+  if (observation.kind === 'indeterminate') {
+    throw observation.error
+  }
+  const existing = observation.kind === 'present' ? observation.value : ''
   const updated = upsertHookTrustEntriesInContent(existing, entries)
   if (updated === existing) {
     return

@@ -1,6 +1,5 @@
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { readAgentStateFileSync } from '../agent-state-file-reader'
+import { observeAgentStateFile, observeResolvedPathEntry } from './codex-path-observation'
 import { getOrcaManagedCodexHomePath, getSystemCodexHomePath } from './codex-home-paths'
 import type { CodexSettingsPromotionHomes } from './config-settings-promotion'
 import type {
@@ -28,20 +27,28 @@ export function getCodexConfigSyncStatus(
   const runtimeConfigPath = join(homes.runtimeHomePath, 'config.toml')
   // Why: a stall only withholds settings once a managed runtime config exists;
   // without one the mirror seeds it and there is nothing yet to fall behind.
-  if (!existsSync(runtimeConfigPath)) {
+  // But `existsSync` said "no runtime config" for one that was merely locked,
+  // and this function then reported `synced` while the mirror was refusing —
+  // telling the user their edits had been applied when nothing had run.
+  const runtimeConfigObservation = observeResolvedPathEntry(runtimeConfigPath)
+  if (runtimeConfigObservation.kind === 'absent') {
     return { state: 'synced', reason: null, systemConfigPath }
   }
-  if (!existsSync(systemConfigPath)) {
+  if (runtimeConfigObservation.kind === 'indeterminate') {
+    // Why: the managed home is what could not be read, so say that rather than
+    // borrowing a source-side reason and blaming the wrong path.
+    return { state: 'stalled', reason: 'managed-home-unavailable', systemConfigPath }
+  }
+  const systemConfigObservation = observeAgentStateFile(systemConfigPath)
+  if (systemConfigObservation.kind === 'absent') {
     return { state: 'stalled', reason: 'missing-source', systemConfigPath }
   }
-  let rawSystemConfig: string
-  try {
-    rawSystemConfig = readAgentStateFileSync(systemConfigPath)
-  } catch {
+  if (systemConfigObservation.kind === 'indeterminate') {
     // Why: the mirror aborts on an unreadable source too, so report the stall
     // rather than claiming a sync that cannot happen.
     return { state: 'stalled', reason: 'unreadable-source', systemConfigPath }
   }
+  const rawSystemConfig = systemConfigObservation.value
   if (rawSystemConfig.trim() === '') {
     return { state: 'stalled', reason: 'blank-source', systemConfigPath }
   }

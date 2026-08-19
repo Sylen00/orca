@@ -14,7 +14,7 @@ import {
 import { parseTomlKeyPath, parseTomlTableHeaderPath } from './config-toml-key-path'
 import { tuiStructuredKey, upsertPromotedSettingsInContent } from './codex-config-settings-upsert'
 import {
-  readCodexSettingsBaseline,
+  observeCodexSettingsBaseline,
   writeCodexSettingsBaseline,
   type CodexSettingsBaseline,
   type CodexSettingsConflict
@@ -163,6 +163,13 @@ export function snapshotCodexRuntimeSettingsBaseline(
   runtimeHomePath = getOrcaManagedCodexHomePath(),
   conflicts: ReadonlyMap<string, CodexSettingsConflict> = new Map()
 ): void {
+  // Why: overwriting a baseline that could not be read records whatever the
+  // runtime config says now as "Orca wrote this", so an edit the user made
+  // inside Codex since the last pass is reclassified and never promoted again.
+  // Absent and malformed are still rebuilt — that is what this function is for.
+  if (observeCodexSettingsBaseline(runtimeHomePath).kind === 'indeterminate') {
+    return
+  }
   try {
     const runtimeTomlPath = join(runtimeHomePath, 'config.toml')
     // Why: record an empty baseline even for a missing runtime config, so Codex's first write still diffs and promotes.
@@ -235,10 +242,17 @@ function promoteCodexRuntimeSettingsToSystemUnsafe(
     throw runtimeTomlObservation.error
   }
   // Why: without a baseline, a stale runtime value looks like a fresh in-Codex change; skip until the mirror writes one.
-  const baseline = readCodexSettingsBaseline(runtimeHomePath)
-  if (!baseline) {
+  const baselineObservation = observeCodexSettingsBaseline(runtimeHomePath)
+  if (baselineObservation.kind === 'indeterminate') {
+    // Why: an empty plan here lets the mirror proceed and write the system value
+    // back over an in-Codex edit this baseline would have identified. The caller
+    // turns a throw into the existing stall-and-retry null.
+    throw new Error('Codex settings baseline could not be read')
+  }
+  if (baselineObservation.kind === 'absent') {
     return emptyPromotionPlan()
   }
+  const baseline = baselineObservation.baseline
   const runtimeValues = readPromotedSettingValues(runtimeTomlPath)
   const systemValues = readPromotedSettingValues(systemTomlPath)
   const updates = new Map<string, string>()

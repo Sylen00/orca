@@ -1,4 +1,5 @@
 import { existsSync, writeFileSync } from 'node:fs'
+import { isDefinitiveAbsence } from '../../shared/definitive-filesystem-absence'
 import { join } from 'node:path'
 import { readAgentStateFileSync, readAgentStateJsonFileSync } from '../agent-state-file-reader'
 
@@ -20,11 +21,39 @@ type StoredSettingsBaseline = {
   conflicts?: Record<string, CodexSettingsConflict>
 }
 
-export function readCodexSettingsBaseline(runtimeHomePath: string): CodexSettingsBaseline | null {
+/**
+ * Why callers need three answers, not two: the baseline records what Orca last
+ * mirrored, so `null` drives "there is nothing to compare against, bootstrap
+ * one". For a file that merely could not be READ, bootstrapping overwrites the
+ * record of a change the user made inside Codex, and the next mirror pass then
+ * writes the old value back over their edit. Absent and unparseable still map
+ * to `absent` — rebuilding those is the intent.
+ */
+export type CodexSettingsBaselineObservation =
+  | { kind: 'present'; baseline: CodexSettingsBaseline }
+  | { kind: 'absent' }
+  | { kind: 'indeterminate' }
+
+export function observeCodexSettingsBaseline(
+  runtimeHomePath: string
+): CodexSettingsBaselineObservation {
   const baselinePath = getCodexSettingsBaselinePath(runtimeHomePath)
-  if (!existsSync(baselinePath)) {
-    return null
+  const baseline = readParsedCodexSettingsBaseline(baselinePath)
+  if (baseline === 'unreadable') {
+    return { kind: 'indeterminate' }
   }
+  return baseline ? { kind: 'present', baseline } : { kind: 'absent' }
+}
+
+/** Absent and unreadable both collapse to `null`; use the observation to tell them apart. */
+export function readCodexSettingsBaseline(runtimeHomePath: string): CodexSettingsBaseline | null {
+  const observation = observeCodexSettingsBaseline(runtimeHomePath)
+  return observation.kind === 'present' ? observation.baseline : null
+}
+
+function readParsedCodexSettingsBaseline(
+  baselinePath: string
+): CodexSettingsBaseline | null | 'unreadable' {
   try {
     const parsed: unknown = readAgentStateJsonFileSync(baselinePath)
     if (!isStoredSettingsBaseline(parsed)) {
@@ -46,9 +75,16 @@ export function readCodexSettingsBaseline(runtimeHomePath: string): CodexSetting
       }
     }
     return { settings, conflicts }
-  } catch {
-    return null
+  } catch (error) {
+    // Why: a malformed baseline is still `null` — resetting corrupt state is the
+    // intent, and only a read that FAILED must be preserved.
+    return isDefinitiveAbsence(error) || isMalformedBaselineError(error) ? null : 'unreadable'
   }
+}
+
+/** Why: `readAgentStateJsonFileSync` throws for a parse failure and for a size cap alike. */
+function isMalformedBaselineError(error: unknown): boolean {
+  return error instanceof SyntaxError
 }
 
 export function writeCodexSettingsBaseline(

@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { isDefinitiveAbsence } from '../../shared/definitive-filesystem-absence'
 import { dirname, join } from 'node:path'
 import { getOrcaUserDataPath } from './codex-home-paths'
 import type {
@@ -51,20 +52,45 @@ function getRegistryPath(): string {
   return join(getOrcaUserDataPath(), 'codex-pane-accounts.json')
 }
 
-function readRegistry(): RegistryFile {
+/**
+ * `null` means the registry could not be READ. That is not the same as "no
+ * panes are attributed", and it must never be cached: the old `catch { return
+ * null }` collapsed both into an empty registry, so one unreadable read erased
+ * every pane's account attribution AND pinned that erasure in `cachedRegistry`
+ * for the rest of the process, surviving the file becoming readable again.
+ */
+function readRegistryOrNull(): RegistryFile | null {
   if (cachedRegistry) {
     return cachedRegistry
   }
-  cachedRegistry = parseRegistry(readRegistryFile())
+  let rawRegistry: string
+  try {
+    rawRegistry = readFileSync(getRegistryPath(), 'utf-8')
+  } catch (error) {
+    if (!isDefinitiveAbsence(error)) {
+      return null
+    }
+    cachedRegistry = parseRegistry(null)
+    return cachedRegistry
+  }
+  // Why: a corrupt registry still degrades to empty and IS cached — rebuilding
+  // unparseable state is the intent, and re-reading it every call would only
+  // repeat the parse failure.
+  cachedRegistry = parseRegistry(parseRegistryJson(rawRegistry))
   return cachedRegistry
 }
 
-function readRegistryFile(): unknown {
+function parseRegistryJson(rawRegistry: string): unknown {
   try {
-    return JSON.parse(readFileSync(getRegistryPath(), 'utf-8'))
+    return JSON.parse(rawRegistry)
   } catch {
     return null
   }
+}
+
+/** Read-only callers: an unreadable registry reports no attribution, uncached. */
+function readRegistry(): RegistryFile {
+  return readRegistryOrNull() ?? { version: 2, panes: {} }
 }
 
 function parseRegistry(parsed: unknown): RegistryFile {
@@ -162,7 +188,13 @@ function writeRegistry(registry: RegistryFile): void {
  * Records the account a PTY launched under. Pass null to forget a pinned pane.
  */
 export function recordCodexPaneAccount(ptyId: string, record: CodexPaneAccountRecord | null): void {
-  const registry = readRegistry()
+  // Why: every write below persists the whole registry. Deriving it from an
+  // empty stand-in because the real one could not be read would drop every
+  // other pane's attribution on disk. Skip; the next record retries.
+  const registry = readRegistryOrNull()
+  if (!registry) {
+    return
+  }
   if (!record) {
     if (!(ptyId in registry.panes)) {
       return
@@ -279,7 +311,13 @@ export function hasRecordedManagedHostCodexPane(): boolean {
 
 /** Drops records whose daemon PTYs are authoritatively absent. */
 export function reconcileCodexPaneAccountsWithLivePtys(livePtyIds: readonly string[]): void {
-  const registry = readRegistry()
+  // Why: this deletes every pane not in the live list. Against an empty stand-in
+  // it is a no-op, but the write it guards would still persist that stand-in
+  // over the real file, so refuse rather than reconcile a registry nobody read.
+  const registry = readRegistryOrNull()
+  if (!registry) {
+    return
+  }
   const livePtyIdSet = new Set(livePtyIds)
   let changed = false
   for (const ptyId of Object.keys(registry.panes)) {
