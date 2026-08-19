@@ -1,6 +1,7 @@
-import { existsSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { isDefinitiveAbsence } from '../../shared/definitive-filesystem-absence'
 import { JsonTextStructureCapacityError } from '../../shared/json-text-structure-limit'
+import { NodeFileReadTooLargeError } from '../../shared/node-bounded-file-reader'
 import { join } from 'node:path'
 import { readAgentStateFileSync, readAgentStateJsonFileSync } from '../agent-state-file-reader'
 
@@ -77,15 +78,19 @@ function readParsedCodexSettingsBaseline(
     }
     return { settings, conflicts }
   } catch (error) {
-    // Why: a malformed baseline is still `null` — resetting corrupt state is the
-    // intent, and only a read that FAILED must be preserved.
-    return isDefinitiveAbsence(error) || isMalformedBaselineError(error) ? null : 'unreadable'
+    // Why: invalid baseline state is still `null` — resetting it is the intent,
+    // and only a read that FAILED must be preserved.
+    return isDefinitiveAbsence(error) || isRebuildableBaselineError(error) ? null : 'unreadable'
   }
 }
 
-/** Why: a fully read baseline that exceeds JSON structure limits is corrupt state, not a failed read. */
-function isMalformedBaselineError(error: unknown): boolean {
-  return error instanceof SyntaxError || error instanceof JsonTextStructureCapacityError
+/** Why: known-present baseline state outside its parse/capacity contract is rebuildable, not unreadable. */
+function isRebuildableBaselineError(error: unknown): boolean {
+  return (
+    error instanceof SyntaxError ||
+    error instanceof JsonTextStructureCapacityError ||
+    error instanceof NodeFileReadTooLargeError
+  )
 }
 
 export function writeCodexSettingsBaseline(
@@ -101,8 +106,17 @@ export function writeCodexSettingsBaseline(
   }
   const baselinePath = getCodexSettingsBaselinePath(runtimeHomePath)
   const serialized = `${JSON.stringify(file, null, 2)}\n`
+  let existing: string | null = null
+  try {
+    existing = readAgentStateFileSync(baselinePath)
+  } catch (error) {
+    // Why: only absence or known-invalid derived state may authorize replacement.
+    if (!isDefinitiveAbsence(error) && !isRebuildableBaselineError(error)) {
+      throw error
+    }
+  }
   // Why: launch prep runs repeatedly; byte-identical baselines should not churn disk metadata.
-  if (existsSync(baselinePath) && readAgentStateFileSync(baselinePath) === serialized) {
+  if (existing === serialized) {
     return
   }
   writeFileSync(baselinePath, serialized, { encoding: 'utf-8', mode: 0o600 })

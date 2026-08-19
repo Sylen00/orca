@@ -133,6 +133,8 @@ const {
   getCodexTrustGrantLedgerPath
 } = await import('./codex-trust-grant-ledger')
 const { readHooksJson } = await import('../agent-hooks/hooks-json-read')
+const { MAX_AGENT_STATE_FILE_BYTES } = await import('../agent-state-file-reader')
+const { observeCodexSettingsBaseline } = await import('./config-settings-baseline')
 const { snapshotCodexRuntimeSettingsBaseline } = await import('./config-settings-promotion')
 const { getCodexConfigSyncStatus } = await import('./config-sync-stall')
 const paneRegistry = await import('./codex-pane-account-registry')
@@ -355,6 +357,25 @@ describe('STA-4823 D26 — an unreadable settings baseline must not be overwritt
     snapshotCodexRuntimeSettingsBaseline(runtimeHomePath)
 
     expect(JSON.parse(realFs.readFileSync(baselinePath(), 'utf-8'))).toMatchObject({ version: 2 })
+  })
+
+  it('rebuilds an oversized baseline previously produced from a bounded runtime config', () => {
+    const escapedValue = '\\'.repeat(MAX_AGENT_STATE_FILE_BYTES / 2 + 64)
+    const oversizedRuntimeConfig = `model = "${escapedValue}"\n`
+    expect(Buffer.byteLength(oversizedRuntimeConfig)).toBeLessThan(MAX_AGENT_STATE_FILE_BYTES)
+    realFs.writeFileSync(join(runtimeHomePath, 'config.toml'), oversizedRuntimeConfig, 'utf-8')
+
+    snapshotCodexRuntimeSettingsBaseline(runtimeHomePath)
+    expect(realFs.statSync(baselinePath()).size).toBeGreaterThan(MAX_AGENT_STATE_FILE_BYTES)
+    expect(observeCodexSettingsBaseline(runtimeHomePath)).toEqual({ kind: 'absent' })
+
+    realFs.writeFileSync(join(runtimeHomePath, 'config.toml'), 'model = "recovered"\n', 'utf-8')
+    snapshotCodexRuntimeSettingsBaseline(runtimeHomePath)
+
+    expect(realFs.statSync(baselinePath()).size).toBeLessThan(MAX_AGENT_STATE_FILE_BYTES)
+    expect(JSON.parse(realFs.readFileSync(baselinePath(), 'utf-8'))).toMatchObject({
+      settings: { model: '"recovered"' }
+    })
   })
 })
 
