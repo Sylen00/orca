@@ -108,10 +108,13 @@ export function activateAndRevealFolderWorkspace(
   }
 
   // Why: a plain reselect of the workspace you are already looking at must not undo
-  // closing its last terminal; every other activation re-seeds one.
+  // closing its last terminal; every other activation re-seeds one. The host must match
+  // too — one folder id resolves to a different workspace per host while sharing one
+  // `tabsByWorktree` row, so a cross-host open is a real activation, not a reselect.
   const isPlainAlreadyActiveTerminal =
     !opts?.startup &&
     state.activeWorktreeId === folderWorkspaceKey(folderWorkspaceId) &&
+    state.activeWorkspaceExecutionHostId === (opts?.executionHostId ?? null) &&
     state.activeView === 'terminal'
 
   if (state.activeView !== 'terminal') {
