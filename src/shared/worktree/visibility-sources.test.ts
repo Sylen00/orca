@@ -59,6 +59,35 @@ describe('worktree visibility sources', () => {
     expect(wsl('//wsl.localhost/Ubuntu/home/Dev/team/feature')).toBeNull()
   })
 
+  it('yields a built-in root to a worktree base the project configured there', () => {
+    const classify = createWorktreeVisibilitySourceMatcher(
+      ['/repo'],
+      [],
+      ['/repo/.claude/worktrees']
+    )
+    expect(classify('/repo/.claude/worktrees/review')).toBeNull()
+    expect(classify('/repo/.gsd-workspaces/phase-1')).toEqual({ kind: 'built-in', id: 'gsd' })
+  })
+
+  it('keeps a built-in root a base merely contains', () => {
+    for (const configuredBase of ['/repo', '/']) {
+      const classify = createWorktreeVisibilitySourceMatcher(['/repo'], [], [configuredBase])
+      expect(classify('/repo/.claude/worktrees/review')).toEqual({
+        kind: 'built-in',
+        id: 'claude'
+      })
+    }
+  })
+
+  it('lets a custom source claim a configured base the built-in released', () => {
+    const classify = createWorktreeVisibilitySourceMatcher(
+      ['/repo'],
+      [{ id: 'overlap', rootPath: '/repo/.claude/worktrees' }],
+      ['/repo/.claude/worktrees']
+    )
+    expect(classify('/repo/.claude/worktrees/review')).toEqual({ kind: 'custom', id: 'overlap' })
+  })
+
   it('gives built-ins precedence over overlapping custom roots', () => {
     const classify = createWorktreeVisibilitySourceMatcher(
       ['/repo'],
