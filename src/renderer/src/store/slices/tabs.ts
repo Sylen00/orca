@@ -1059,14 +1059,18 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
             })()
           : state.unreadTerminalTabs
       return {
-        unifiedTabsByWorktree: opts?.preservePreview
-          ? state.unifiedTabsByWorktree
-          : {
-              ...state.unifiedTabsByWorktree,
-              [worktreeId]: (state.unifiedTabsByWorktree[worktreeId] ?? []).map((item) =>
-                item.id === tabId ? { ...item, isPreview: false } : item
-              )
-            },
+        unifiedTabsByWorktree: {
+          ...state.unifiedTabsByWorktree,
+          [worktreeId]: (state.unifiedTabsByWorktree[worktreeId] ?? []).map((item) =>
+            item.id === tabId
+              ? {
+                  ...item,
+                  isPreview: opts?.preservePreview ? item.isPreview : false,
+                  lastFocusedAt: Date.now()
+                }
+              : item
+          )
+        },
         groupsByWorktree: {
           ...state.groupsByWorktree,
           [worktreeId]: (state.groupsByWorktree[worktreeId] ?? []).map((group) =>

@@ -138,7 +138,7 @@ import {
 } from '@/components/browser-pane/host-guest/browser-focus'
 import { RepoBadgeMark } from '@/components/repo/RepoBadgeLabel'
 import { buildSidebarHostOptions } from '@/components/sidebar/sidebar-host-options'
-import { getPaletteHostBadge, type PaletteHostBadge } from '@/components/cmd-j/palette-host-badge'
+import { getPaletteHostBadge } from '@/components/cmd-j/palette-host-badge'
 import {
   composeWorktreeHostIdentity,
   getWorktreeHostIdentity
@@ -1385,8 +1385,18 @@ function WorktreeJumpPaletteContent({
     // An empty query leaves every rank null, so ordering falls through to those scores.
     return items.sort((a, b) =>
       comparePaletteRankedItems(
-        { rank: a.result.rank, order: a.result.score, id: a.id },
-        { rank: b.result.rank, order: b.result.score, id: b.id }
+        {
+          rank: a.result.rank,
+          order: a.result.score,
+          id: a.id,
+          lastActiveAt: a.result.lastActiveAt ?? undefined
+        },
+        {
+          rank: b.result.rank,
+          order: b.result.score,
+          id: b.id,
+          lastActiveAt: b.result.lastActiveAt ?? undefined
+        }
       )
     )
   }, [browserItems, simulatorItems, workspaceTabItems])

@@ -86,10 +86,11 @@ function positionScore(entry: SearchableWorkspaceTab): number {
 }
 
 function resolveWorkspaceTabLastActiveAt(entry: SearchableWorkspaceTab): number | null {
-  // Agent activity wins when present; otherwise fall back to the worktree's PTY
-  // activity, which covers idle terminals and editor tabs alike.
+  // Agent activity wins when present; then explicit tab focus; otherwise fall back to worktree.
   const candidate =
-    maxAgentActivityAt(entry.agentMetadata) ?? (entry.worktree.lastActivityAt || null)
+    maxAgentActivityAt(entry.agentMetadata) ??
+    entry.tab.lastFocusedAt ??
+    (entry.worktree.lastActivityAt || null)
   if (candidate == null) {
     return null
   }
@@ -193,8 +194,18 @@ export function searchWorkspaceTabs(
   return results.sort((a, b) =>
     a.rank && b.rank
       ? comparePaletteTabResults(
-          { rank: a.rank, positionScore: a.score, id: a.tabId },
-          { rank: b.rank, positionScore: b.score, id: b.tabId }
+          {
+            rank: a.rank,
+            positionScore: a.score,
+            id: a.tabId,
+            lastActiveAt: a.lastActiveAt ?? undefined
+          },
+          {
+            rank: b.rank,
+            positionScore: b.score,
+            id: b.tabId,
+            lastActiveAt: b.lastActiveAt ?? undefined
+          }
         )
       : compareEmptyQueryResults(a, b)
   )

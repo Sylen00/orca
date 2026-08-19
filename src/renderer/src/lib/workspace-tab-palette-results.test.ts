@@ -68,6 +68,7 @@ function makeEntry({
     worktreeSortIndex: 0,
     groupSortIndex: 0,
     tabSortIndex: 0,
+    occupantAgent: null,
     title,
     secondaryText: '',
     titleSearchText: title,
@@ -136,5 +137,74 @@ describe('searchWorkspaceTabs lastActiveAt', () => {
     })
     const [result] = searchWorkspaceTabs([entry], '')
     expect(result.lastActiveAt).toBe(4000)
+  })
+
+  it('uses tab lastFocusedAt when no agent metadata is present', () => {
+    const entry = makeEntry({
+      id: 'tab-focused',
+      createdAt: 1000
+    })
+    entry.tab.lastFocusedAt = 6000
+    const [result] = searchWorkspaceTabs([entry], '')
+    expect(result.lastActiveAt).toBe(6000)
+  })
+})
+
+describe('searchWorkspaceTabs ranking', () => {
+  it('ranks direct tab title matches ahead of container-only worktree matches', () => {
+    const directEntry = makeEntry({ id: 'README-4360' })
+    const containerEntry = makeEntry({ id: 'unrelated-file' })
+    // Both are in WORKTREE_NAME 'Aurora Workspace', but suppose worktree has 4360
+    directEntry.document = buildPaletteTabDocument({
+      id: 'tab-direct',
+      title: 'STA-4360-fix.ts',
+      secondaryTexts: [],
+      worktreeName: 'STA-4360',
+      branch: 'main',
+      repoName: 'repo'
+    })
+    containerEntry.document = buildPaletteTabDocument({
+      id: 'tab-container',
+      title: 'other-file.ts',
+      secondaryTexts: [],
+      worktreeName: 'STA-4360',
+      branch: 'main',
+      repoName: 'repo'
+    })
+
+    const results = searchWorkspaceTabs([containerEntry, directEntry], '4360')
+    expect(results).toHaveLength(2)
+    expect(results[0].tabId).toBe('README-4360')
+    expect(results[0].rank?.matchedDirectField).toBe(0)
+    expect(results[1].tabId).toBe('unrelated-file')
+    expect(results[1].rank?.matchedDirectField).toBe(1)
+  })
+
+  it('breaks tie between two container-matching tabs using lastActiveAt recency', () => {
+    const olderTab = makeEntry({ id: 'older-tab' })
+    const newerTab = makeEntry({ id: 'newer-tab' })
+    olderTab.document = buildPaletteTabDocument({
+      id: 'older',
+      title: 'file-a.ts',
+      secondaryTexts: [],
+      worktreeName: 'STA-4360',
+      branch: 'main',
+      repoName: 'repo'
+    })
+    newerTab.document = buildPaletteTabDocument({
+      id: 'newer',
+      title: 'file-b.ts',
+      secondaryTexts: [],
+      worktreeName: 'STA-4360',
+      branch: 'main',
+      repoName: 'repo'
+    })
+    olderTab.tab.lastFocusedAt = 1000
+    newerTab.tab.lastFocusedAt = 5000
+
+    const results = searchWorkspaceTabs([olderTab, newerTab], '4360')
+    expect(results).toHaveLength(2)
+    expect(results[0].tabId).toBe('newer-tab')
+    expect(results[1].tabId).toBe('older-tab')
   })
 })

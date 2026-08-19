@@ -55,6 +55,7 @@ export type BrowserPaletteSearchResult = {
   score: number
   qualityClass: PaletteResultQualityClass | null
   rank: PaletteDocumentRank | null
+  lastActiveAt?: number | null
 }
 
 export const BROWSER_PALETTE_QUERY_MAX_BYTES = 2 * 1024
@@ -208,8 +209,18 @@ export function searchBrowserPages(
   return results.sort((a, b) =>
     a.rank && b.rank
       ? comparePaletteTabResults(
-          { rank: a.rank, positionScore: a.score, id: a.pageId },
-          { rank: b.rank, positionScore: b.score, id: b.pageId }
+          {
+            rank: a.rank,
+            positionScore: a.score,
+            id: a.pageId,
+            lastActiveAt: a.lastActiveAt ?? undefined
+          },
+          {
+            rank: b.rank,
+            positionScore: b.score,
+            id: b.pageId,
+            lastActiveAt: b.lastActiveAt ?? undefined
+          }
         )
       : compareEmptyQueryResults(a, b)
   )

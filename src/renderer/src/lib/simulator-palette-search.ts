@@ -54,6 +54,7 @@ export type SimulatorPaletteSearchResult = {
   score: number
   qualityClass: PaletteResultQualityClass | null
   rank: PaletteDocumentRank | null
+  lastActiveAt?: number | null
 }
 
 type SimulatorPaletteActiveTabType = 'browser' | 'editor' | 'terminal' | 'simulator'
@@ -290,8 +291,18 @@ export function searchSimulatorTabs(
   return results.sort((a, b) =>
     a.rank && b.rank
       ? comparePaletteTabResults(
-          { rank: a.rank, positionScore: a.score, id: a.tabId },
-          { rank: b.rank, positionScore: b.score, id: b.tabId }
+          {
+            rank: a.rank,
+            positionScore: a.score,
+            id: a.tabId,
+            lastActiveAt: a.lastActiveAt ?? undefined
+          },
+          {
+            rank: b.rank,
+            positionScore: b.score,
+            id: b.tabId,
+            lastActiveAt: b.lastActiveAt ?? undefined
+          }
         )
       : compareEmptyQueryResults(a, b)
   )
