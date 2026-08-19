@@ -7,8 +7,14 @@ import {
   CLIENT_WORKTREE_CREATE_MAX_ATTEMPTS,
   getClientWorktreeCreateCandidate,
   getGeneratedWorktreeCreateRetryCandidate,
-  isRetryableWorktreeCreateConflict
+  isRetryableWorktreeCreateConflict,
+  WORKTREE_CREATE_DEDUPE_TTL_MS
 } from '../../../src/shared/new-workspace/worktree-create-retry-policy'
+import {
+  LIVENESS_IDLE_MS,
+  LIVENESS_PROBE_TIMEOUT_MS,
+  MISSED_PROBE_LIMIT
+} from '../transport/rpc-session-liveness-watchdog'
 import { WORKTREE_CREATE_TIMEOUT_MS } from './workspace-create-timeout'
 
 // Why: server-side collision checks (branch already exists locally / on a remote
@@ -34,10 +40,23 @@ const WORKTREE_CREATE_CUTOVER_MAX_RETRIES = 5
 // to be caught by one. Surfacing that as a failure is wrong: the host may well have
 // finished the worktree. Replay on the same clientMutationId instead.
 const WORKTREE_CREATE_AMBIGUOUS_MAX_RETRIES = 2
-// Why: the host drops a completed create's dedupe record 60s after it resolves, so
-// keep the whole replay window comfortably inside that or a replay lands as a fresh
-// create and suffixes a duplicate. An in-flight create is deduped without any TTL.
-const WORKTREE_CREATE_AMBIGUOUS_RECONNECT_WAIT_MS = 20_000
+
+// Why: the host keeps a settled create's dedupe record for WORKTREE_CREATE_DEDUPE_TTL_MS
+// after it resolves; a replay that lands later misses it and the host's suffix loop
+// builds a SECOND worktree — and for folder workspaces a second one with the SAME name
+// and no collision check at all. So what bounds a safe replay is not how long the create
+// ran, but how STALE the client's knowledge is: the worst case between the host losing a
+// response and the client noticing. A dead socket is detected by the liveness watchdog
+// within one idle period plus its missed-probe budget, so that is the staleness ceiling
+// for any drop the transport actually reports.
+const WORKTREE_CREATE_AMBIGUITY_DETECTION_CEILING_MS =
+  LIVENESS_IDLE_MS + MISSED_PROBE_LIMIT * LIVENESS_PROBE_TIMEOUT_MS
+// What is left of the host's record once that detection latency is spent. The reconnect
+// wait plus any further replay has to fit inside it.
+export const WORKTREE_CREATE_AMBIGUOUS_REPLAY_WINDOW_MS =
+  WORKTREE_CREATE_DEDUPE_TTL_MS - WORKTREE_CREATE_AMBIGUITY_DETECTION_CEILING_MS
+export const WORKTREE_CREATE_AMBIGUOUS_RECONNECT_WAIT_MS =
+  WORKTREE_CREATE_AMBIGUOUS_REPLAY_WINDOW_MS
 
 export type CreateWorktreeWithNameRetryArgs = {
   client: RpcClient
@@ -105,6 +124,9 @@ async function sendWorktreeCreateResilient(
 ): Promise<RpcResponse> {
   let migrationRetry = 0
   let ambiguousRetry = 0
+  // Anchored at the FIRST ambiguity, not at the send: a create legitimately runs for
+  // minutes, and the host's record only starts ticking once it resolves.
+  let replayDeadlineAt: number | null = null
   for (;;) {
     try {
       return await client.sendRequest('worktree.create', params, {
@@ -126,12 +148,32 @@ async function sendWorktreeCreateResilient(
       if (!isRpcDeliveryUnknown(error) || ambiguousRetry >= WORKTREE_CREATE_AMBIGUOUS_MAX_RETRIES) {
         throw error
       }
+      // Why: every transport path that reports a *drop* leaves 'connected' before the
+      // rejection reaches us (rpc-client.ts:675/695/1213 set state first or reject via
+      // queueMicrotask; the relay's fail() publishes synchronously). So still being
+      // 'connected' here means the socket was healthy the whole time and only the
+      // response went missing — the request-timeout path, which surfaces after
+      // WORKTREE_CREATE_TIMEOUT_MS. That says nothing about when the host actually
+      // resolved, so the dedupe record may be long gone and a replay would build a
+      // second worktree instead of reconciling. Fail the create instead.
+      if (client.getState() === 'connected') {
+        throw error
+      }
+      replayDeadlineAt ??= Date.now() + WORKTREE_CREATE_AMBIGUOUS_REPLAY_WINDOW_MS
+      const remainingWindowMs = replayDeadlineAt - Date.now()
+      if (remainingWindowMs <= 0) {
+        throw error
+      }
       ambiguousRetry += 1
       // Why: unlike a cutover, no replacement session exists yet — resending now
       // would just hit the dead one, so wait for the transport to come back and
-      // surface the original ambiguity if it does not.
+      // surface the original ambiguity if it does not. Clamped to the window so the
+      // wait itself cannot carry the replay past the host's record.
       if (
-        !(await waitForRpcClientReconnected(client, WORKTREE_CREATE_AMBIGUOUS_RECONNECT_WAIT_MS))
+        !(await waitForRpcClientReconnected(
+          client,
+          Math.min(WORKTREE_CREATE_AMBIGUOUS_RECONNECT_WAIT_MS, remainingWindowMs)
+        ))
       ) {
         throw error
       }
