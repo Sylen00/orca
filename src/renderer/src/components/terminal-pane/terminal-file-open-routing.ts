@@ -29,8 +29,9 @@ function openHtmlFileInBrowser(filePath: string, worktreeId: string): void {
   const store = useAppStore.getState()
   if (worktreeId) {
     // Why: following an HTML file link changes which worktree is foregrounded,
-    // so it must record a history visit before opening the browser tab.
-    activateAndRevealWorktree(worktreeId)
+    // so it must record a history visit before opening the browser tab — but the
+    // browser tab is the surface, so an emptied workspace must not gain a shell.
+    activateAndRevealWorktree(worktreeId, { providesInitialSurface: true })
   }
   const fileUrl = absolutePathToFileUri(filePath)
   const title = filePath.split(/[/\\]/).pop() ?? filePath

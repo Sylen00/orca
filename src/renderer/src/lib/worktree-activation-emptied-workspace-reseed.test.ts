@@ -222,7 +222,11 @@ describe('activating a folder workspace whose last terminal was closed', () => {
     expect(useAppStore.getState().tabsByWorktree[FOLDER_KEY]).toHaveLength(1)
   })
 
-  it('re-seeds when opening the same folder id on a different host', () => {
+  // Why: this asserts the row is re-seeded, NOT that the tab lands on the requested host.
+  // getFolderWorkspaceConnectionId is host-blind (folder-workspace-connection.ts:68 takes the
+  // first id match), so the created tab resolves local even here. That defect is pre-existing —
+  // it reproduces with no row at all, on the ordinary auto-create path — and is out of scope.
+  it('re-seeds the shared row when opening the same folder id on a different host', () => {
     seedEmptiedFolderWorkspaceOnTwoHosts()
     useAppStore.setState({
       activeWorktreeId: FOLDER_KEY,
